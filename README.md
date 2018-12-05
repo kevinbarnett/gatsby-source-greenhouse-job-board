@@ -4,13 +4,13 @@
 ## Installation
 
 ```bash
-npm install kevinbarnett/gatsby-source-greenhouse-job-board
+npm install gatsby-source-greenhouse-job-board
 ```
 
 or
 
 ```bash
-yarn add kevinbarnett/gatsby-source-greenhouse-job-board
+yarn add gatsby-source-greenhouse-job-board
 ```
 
 ## Usage
@@ -46,8 +46,8 @@ GraphQL model.
   allGreenhouseJob {
     edges {
       node {
-	title
-	absolute_url
+      title
+      absolute_url
         location {
           name
         }
@@ -81,8 +81,8 @@ allGreenhouseJob {
       node {
         id
         internal_job_id
-	title
-	absolute_url
+        title
+        absolute_url
         content
         updated_at(formatString: "ddd, MMMM Do, YYYY")
         location {
@@ -111,14 +111,14 @@ Department data links to `jobs` from which all data mentioned in the previous ex
       node {
         id
         name
-	parent {
-	  ...on GreenhouseDepartment {
-            name
-          }
-	}
-        children {
+        parent {
           ...on GreenhouseDepartment {
             name
+          }
+        }
+        children {
+          ...on GreenhouseDepartment {
+             name
           }
         }
         jobs {
@@ -142,11 +142,11 @@ Office data links to both `departments` and `jobs` from which all data mentioned
       node {
         id
         name
-	parent {
-	  ...on GreenhouseDepartment {
+        parent {
+          ...on GreenhouseDepartment {
             name
           }
-	}
+        }
         children {
           ...on GreenhouseDepartment {
             name
