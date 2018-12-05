@@ -43,11 +43,11 @@ GraphQL model.
 
 ```graphql
 {
-	allGreenhouseJob {
+  allGreenhouseJob {
     edges {
       node {
-				title,
-				absolute_url,
+	title
+	absolute_url
         location {
           name
         }
@@ -76,13 +76,13 @@ Jobs are linked to their `departments` and `offices`, which following the format
 
 ```graphql
 {
-	allGreenhouseJob {
+allGreenhouseJob {
     edges {
       node {
         id
         internal_job_id
-				title
-				absolute_url
+	title
+	absolute_url
         content
         updated_at(formatString: "ddd, MMMM Do, YYYY")
         location {
@@ -106,16 +106,16 @@ Department data links to `jobs` from which all data mentioned in the previous ex
 
 ```graphql
 {
-	allGreenhouseDepartment {
+  allGreenhouseDepartment {
     edges {
       node {
         id
         name
-				parent {
-				  ...on GreenhouseDepartment {
+	parent {
+	  ...on GreenhouseDepartment {
             name
           }
-				}
+	}
         children {
           ...on GreenhouseDepartment {
             name
@@ -137,16 +137,16 @@ Office data links to both `departments` and `jobs` from which all data mentioned
 
 ```graphql
 {
-	allGreenhouseDepartment {
+  allGreenhouseDepartment {
     edges {
       node {
         id
         name
-				parent {
-				  ...on GreenhouseDepartment {
+	parent {
+	  ...on GreenhouseDepartment {
             name
           }
-				}
+	}
         children {
           ...on GreenhouseDepartment {
             name
