@@ -50,8 +50,6 @@ exports.sourceNodes = async (gatsby, pluginOptions) => {
   // Construct the node objects from the API responses
   nodes = buildNodesFromResponse({offices, departments, jobs})
 
-  // TODO: add custom fields for types, url slugs?
-
   // Link Offices to their parents/children
   // Link Departments to their parents/children
   nodes = linkParentChildReferences(nodes)
