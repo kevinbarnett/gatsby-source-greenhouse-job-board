@@ -26,7 +26,7 @@ const getJobs = (url) =>
     .then(jobs => {
       return Promise.all(
         jobs.map(async job => {
-          const node = await getJob(url + job.id)
+          const node = await getJob(`${url}${job.id}?questions=true`)
           return node
         })
       )
