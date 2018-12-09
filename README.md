@@ -146,18 +146,18 @@ Office data links to both `departments` and `jobs` from which all data mentioned
 
 ```graphql
 {
-  allGreenhouseDepartment {
+  allGreenhouseOffice {
     edges {
       node {
         id
         name
         parent {
-          ...on GreenhouseDepartment {
+          ...on GreenhouseOffice {
             name
           }
         }
         children {
-          ...on GreenhouseDepartment {
+          ...on GreenhouseOffice {
             name
           }
         }
