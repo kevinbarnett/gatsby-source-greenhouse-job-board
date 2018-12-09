@@ -85,6 +85,15 @@ allGreenhouseJob {
         absolute_url
         content
         updated_at(formatString: "ddd, MMMM Do, YYYY")
+        questions {
+          description
+          label
+          required
+          fields {
+            name
+            type
+          }
+    	  }
         location {
           name
         }
@@ -118,7 +127,7 @@ Department data links to `jobs` from which all data mentioned in the previous ex
         }
         children {
           ...on GreenhouseDepartment {
-             name
+            name
           }
         }
         jobs {
