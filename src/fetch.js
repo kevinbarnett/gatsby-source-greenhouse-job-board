@@ -1,64 +1,50 @@
 const axios = require('axios')
 const baseUrl = `https://boards-api.greenhouse.io/v1/boards`
 
-async function fetchJobs(boardToken) {
-  const url = `${baseUrl}/${boardToken}/jobs/`
-  const jobs = await getJobs(url)
-  return jobs
-}
+const fetchJobs = (boardTokens) =>
+  getJobs(boardTokens.map(boardToken =>
+    axios.get(`${baseUrl}/${boardToken}/jobs/`)
+  )
+);
 
-async function fetchOffices(boardToken) {
-  const url = `${baseUrl}/${boardToken}/offices/`
-  const offices = await getOffices(url)
-  return offices
-}
+const fetchOffices = (boardTokens) =>
+  getOffices(boardTokens.map(boardToken =>
+    axios.get(`${baseUrl}/${boardToken}/offices/`))
+  );
 
-async function fetchDepartments(boardToken) {
-  const url = `${baseUrl}/${boardToken}/departments/`
-  const departments = await getDepartments(url)
-  return departments
-}
+const fetchDepartments = (boardTokens) =>
+  getDepartments(boardTokens.map(boardToken =>
+    axios.get(`${baseUrl}/${boardToken}/departments/`))
+  );
 
-const getJobs = (url) => 
-  axios
-    .get(url)
-    .then(response => response.data.jobs)
-    .then(jobs => {
-      return Promise.all(
-        jobs.map(async job => {
-          const node = await getJob(`${url}${job.id}?questions=true`)
-          return node
-        })
-      )
-    })
-    .catch(error => console.log(error))
+const getJobs = (urls) => Promise.all(urls)
+  .then((response) => response.map((data) => ({
+    url: data.config.url,
+    jobs: data.data.jobs
+  })))
+  .then(data =>
+    Promise.all(
+      data.reduce((acc, { url, jobs }) =>
+      [...acc, ...jobs.map(async job =>
+        await getJob(`${url}${job.id}?questions=true`))], [])
+    )
+  )
+  .catch(console.error);
 
-const getJob = (url) => 
+const getJob = (url) =>
   axios
     .get(url)
     .then(response => response.data)
-    .then(data => {
-      return data
-    })
-    .catch(error => console.log(error))
+    .catch(console.error);
 
-const getOffices = (url) => 
-  axios
-    .get(url)
-    .then(response => response.data.offices)
-    .then(offices => {
-      return offices
-    })
-    .catch(error => console.log(error))
+const getOffices = async (urls) => await Promise.all(urls)
+  .then(response => response.map(data => data.data.offices))
+  .then(offices => offices.reduce((acc, curr) => [...acc, ...curr], []))
+  .catch(console.error);
 
-const getDepartments = (url) => 
-  axios
-    .get(url)
-    .then(response => response.data.departments)
-    .then(departments => {
-      return departments
-    })
-    .catch(error => console.log(error))
+const getDepartments = async (urls) => await Promise.all(urls)
+  .then(response => response.map(data => data.data.departments))
+  .then(departments => departments.reduce((acc, curr) => [...acc, ...curr], []))
+  .catch(console.error);
 
 module.exports = { fetchJobs, fetchOffices, fetchDepartments }
-
