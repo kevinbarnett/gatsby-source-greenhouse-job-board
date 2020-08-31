@@ -1,33 +1,41 @@
-const { 
+const {
   fetchJobs,
   fetchOffices,
-  fetchDepartments 
+  fetchDepartments
 } = require('./fetch')
 
-const { 
+const {
   filterResponseForIds,
   buildNodesFromResponse,
   linkParentChildReferences,
-  linkForeignReferences 
+  linkForeignReferences
 } = require(`./normalize`)
 
 const chalk = require('chalk');
 const log = (message) => console.log('\n',message);
 
 exports.sourceNodes = async (gatsby, pluginOptions) => {
-  const { actions } = gatsby  
+  const { actions } = gatsby
   const { createNode } = actions
-  const { boardToken } = pluginOptions
+  const { boardToken, boardTokens = [] } = pluginOptions
 
   let offices, departments, jobs
   let nodes
 
+  let boards = [];
+
+  if (!!boardToken) {
+    log(`${chalk.blue('info')} boardToken has been deprecated. Use 'boardTokens: ['boardToken]' instead.`);
+    boards = [boardToken];
+  } else {
+    boards = [...boardTokens];
+  }
+
   try {
     // Fetch data from the Greenhouse APIs
-    offices = await fetchOffices(boardToken)
-    departments = await fetchDepartments(boardToken)
-    jobs = await fetchJobs(boardToken)
-
+    offices = await fetchOffices(boards)
+    departments = await fetchDepartments(boards)
+    jobs = await fetchJobs(boards)
   } catch (error) {
     log(`
       ${chalk.red.bold('error')} Fetching data from Greenhouse failed
@@ -46,7 +54,7 @@ exports.sourceNodes = async (gatsby, pluginOptions) => {
   offices = filterResponseForIds(offices)
   departments = filterResponseForIds(departments)
   jobs = filterResponseForIds(jobs)
-  
+
   // Construct the node objects from the API responses
   nodes = buildNodesFromResponse({offices, departments, jobs})
 
@@ -58,12 +66,12 @@ exports.sourceNodes = async (gatsby, pluginOptions) => {
   // Link Departments to Jobs
   // Link Jobs to Departments and Offices
   nodes = linkForeignReferences(nodes)
-  
+
   // Create the nodes with Gatsby
   await Promise.all(
     nodes.map(async node => createNode(node))
   )
-  
+
   return
 
 }
