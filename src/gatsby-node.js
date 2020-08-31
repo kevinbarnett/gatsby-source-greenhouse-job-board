@@ -17,16 +17,25 @@ const log = (message) => console.log('\n',message);
 exports.sourceNodes = async (gatsby, pluginOptions) => {
   const { actions } = gatsby
   const { createNode } = actions
-  const { boardTokens } = pluginOptions
+  const { boardToken, boardTokens = [] } = pluginOptions
 
   let offices, departments, jobs
   let nodes
 
+  let boards = [];
+
+  if (!!boardToken) {
+    log(`${chalk.blue('info')} boardToken has been deprecated. Use 'boardTokens: ['boardToken]' instead.`);
+    boards = [boardToken];
+  } else {
+    boards = [...boardTokens];
+  }
+
   try {
     // Fetch data from the Greenhouse APIs
-    offices = await fetchOffices(boardTokens)
-    departments = await fetchDepartments(boardTokens)
-    jobs = await fetchJobs(boardTokens)
+    offices = await fetchOffices(boards)
+    departments = await fetchDepartments(boards)
+    jobs = await fetchJobs(boards)
   } catch (error) {
     log(`
       ${chalk.red.bold('error')} Fetching data from Greenhouse failed
