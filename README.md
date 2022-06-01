@@ -27,7 +27,7 @@ Next, edit `gatsby-config.js` to use the plugin:
     {
       resolve: 'gatsby-source-greenhouse-job-board',
       options: {
-        boardToken: '{board token}'
+        boardTokens: ['{board token}']
       },
   ]
 }
