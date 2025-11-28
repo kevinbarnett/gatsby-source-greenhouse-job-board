@@ -5,7 +5,7 @@
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kevinbarnett/gatsby-source-greenhouse-job-board"
+    "url": "git+https://github.com/kevinbarnett/gatsby-source-greenhouse-job-board.git"
   },
   "keywords": [
     "gatsby",
