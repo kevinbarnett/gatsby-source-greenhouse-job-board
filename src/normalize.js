@@ -5,15 +5,26 @@ const types = {
   department: 'Department'
 }
 
-const createNodeHelpers = require('gatsby-node-helpers').default
-const { createNodeFactory, generateNodeId } = createNodeHelpers({
-  typePrefix: typePrefix,
-  conflictFieldPrefix: 'gh_'
-})
-
-const JobNode = createNodeFactory(types.job)
-const OfficeNode = createNodeFactory(types.office)
-const DepartmentNode = createNodeFactory(types.department)
+// Modern Gatsby node creation without gatsby-node-helpers
+// Uses Gatsby's native createNodeId and standard node structure
+const createNodeFactory = (type, createNodeId) => {
+  return (data) => {
+    const nodeId = createNodeId(`${typePrefix}${type}-${data.id}`)
+    return {
+      ...data,
+      id: nodeId,
+      parent: null,
+      children: [],
+      internal: {
+        type: `${typePrefix}${type}`,
+        contentDigest: require('crypto')
+          .createHash('md5')
+          .update(JSON.stringify(data))
+          .digest('hex'),
+      },
+    }
+  }
+}
 
 const isNotEmpty = (arr) => {
   return Boolean(arr && Array.isArray(arr) && arr.length)
@@ -33,25 +44,29 @@ const filterResponseForIds = (response) => {
 
 exports.filterResponseForIds = filterResponseForIds
 
-exports.buildNodesFromResponse = (response) => {
+exports.buildNodesFromResponse = (response, createNodeId) => {
   let nodes = new Array
 
+  const JobNode = createNodeFactory(types.job, createNodeId)
+  const OfficeNode = createNodeFactory(types.office, createNodeId)
+  const DepartmentNode = createNodeFactory(types.department, createNodeId)
+
   if (isNotEmpty(response.offices)) {
-    const officeNodes = response.offices.map(office => { 
+    const officeNodes = response.offices.map(office => {
       return OfficeNode(office)
     })
     nodes = nodes.concat(officeNodes)
   }
-  
+
   if (isNotEmpty(response.departments)) {
-    const departmentNodes = response.departments.map(department => { 
+    const departmentNodes = response.departments.map(department => {
       return DepartmentNode(department)
     })
     nodes = nodes.concat(departmentNodes)
   }
 
   if (isNotEmpty(response.jobs)) {
-    const jobNodes = response.jobs.map(job => { 
+    const jobNodes = response.jobs.map(job => {
       return JobNode(job)
     })
     nodes = nodes.concat(jobNodes)
@@ -60,18 +75,18 @@ exports.buildNodesFromResponse = (response) => {
   return nodes
 }
 
-exports.linkParentChildReferences = (nodes) => {
+exports.linkParentChildReferences = (nodes, createNodeId) => {
   return nodes.map(node => {
-    const type = String(node.internal.type).replace(typePrefix,'')
+    const type = String(node.internal.type).replace(typePrefix, '')
     // look for nodes with child ids (set by Greenhouse)
     if (isNotEmpty(node.child_ids)) {
       node.children = node.child_ids.map(id => {
-        return generateNodeId(type, id)
+        return createNodeId(`${typePrefix}${type}-${id}`)
       })
     }
     // look for nodes with a parent id (set by Greenhouse)
     if (node.parent_id) {
-      node.parent = generateNodeId(type, node.parent_id)
+      node.parent = createNodeId(`${typePrefix}${type}-${node.parent_id}`)
     }
 
     return node
@@ -79,7 +94,7 @@ exports.linkParentChildReferences = (nodes) => {
 }
 
 // https://www.gatsbyjs.org/docs/schema-gql-type/#foreign-key-reference-___node
-exports.linkForeignReferences = (nodes) => {
+exports.linkForeignReferences = (nodes, createNodeId) => {
   return nodes.map(node => {
 
     // look for office nodes
@@ -93,13 +108,13 @@ exports.linkForeignReferences = (nodes) => {
           if (isNotEmpty(department.jobs)) {
             // iterate on the list of jobs and capture their node ids
             const jobNodeIds = department.jobs.map(job => {
-              return generateNodeId('Job', job.id)
+              return createNodeId(`${typePrefix}Job-${job.id}`)
             })
             officeJobNodeIds = officeJobNodeIds.concat(jobNodeIds)
             // remove the element as it will be rebuilt by Gatsby
             delete department.jobs
           }
-          return generateNodeId('Department', department.id)
+          return createNodeId(`${typePrefix}Department-${department.id}`)
         })
         // remove the element as it will be rebuilt by Gatsby
         delete node.departments
@@ -114,11 +129,11 @@ exports.linkForeignReferences = (nodes) => {
     if (node.internal.type === 'GreenhouseDepartment') {
       // look for jobs nested in the department nodes
       if (isNotEmpty(node.jobs)) {
-         // iterate on the list of jobs and capture their node ids
+        // iterate on the list of jobs and capture their node ids
         const departmentJobNodeIds = node.jobs.map(job => {
-          return generateNodeId('Job', job.id)
+          return createNodeId(`${typePrefix}Job-${job.id}`)
         })
-         // remove the element as it will be rebuilt by Gatsby
+        // remove the element as it will be rebuilt by Gatsby
         delete node.jobs
         // link the department to its jobs
         node.jobs___NODE = departmentJobNodeIds
@@ -131,7 +146,7 @@ exports.linkForeignReferences = (nodes) => {
       if (isNotEmpty(node.departments)) {
         // iterate on the list of the departments and capture their node ids
         const jobDepartmentNodeIds = node.departments.map(department => {
-          return generateNodeId('Department', department.id)
+          return createNodeId(`${typePrefix}Department-${department.id}`)
         })
         // remove the element as it will be rebuilt by Gatsby
         delete node.departments
@@ -142,7 +157,7 @@ exports.linkForeignReferences = (nodes) => {
       if (isNotEmpty(node.offices)) {
         // iterate on the list of offices and capture their node ids
         const jobOfficeNodeIds = node.offices.map(office => {
-          return generateNodeId('Office', office.id)
+          return createNodeId(`${typePrefix}Office-${office.id}`)
         })
         // remove the element as it will be rebuilt by Gatsby
         delete node.offices

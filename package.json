@@ -1,6 +1,6 @@
 {
   "name": "gatsby-source-greenhouse-job-board",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "description": "Gatsby source plugin for pulling offices, departments, and jobs into Gatsby from the Greenhouse Job Board API. It creates links between offices, departments, and jobs so they can be queried in Gatsby using GraphQL.",
   "main": "index.js",
   "repository": {
@@ -16,19 +16,20 @@
   "author": "Kevin Barnett",
   "license": "MIT",
   "dependencies": {
-    "@babel/runtime": "^7.0.0",
-    "axios": "^0.18.0",
-    "chalk": "^2.4.1",
-    "gatsby-node-helpers": "^0.3.0"
+    "@babel/runtime": "^7.20.13",
+    "chalk": "^4.1.2"
   },
   "devDependencies": {
-    "@babel/cli": "^7.0.0",
-    "@babel/core": "^7.0.0",
-    "babel-preset-gatsby-package": "^0.1.3",
-    "cross-env": "^5.1.4"
+    "@babel/cli": "^7.20.7",
+    "@babel/core": "^7.20.12",
+    "babel-preset-gatsby-package": "^3.15.0",
+    "cross-env": "^7.0.3"
   },
   "peerDependencies": {
-    "gatsby": "^2.0.0 || ^3.0.0 || ^4.0.0"
+    "gatsby": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "scripts": {
     "build": "babel src --out-dir . --ignore **/__tests__",
