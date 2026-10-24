@@ -2,8 +2,9 @@ const { beforeEach, describe, test } = require('node:test')
 const assert = require('node:assert/strict')
 const { stripVTControlCharacters } = require('node:util')
 const { Joi, testPluginOptionsSchema, validateOptionsSchema } = require('gatsby-plugin-utils')
+const { buildSchema } = require('gatsby/graphql')
 
-const { pluginOptionsSchema, createSchemaCustomization } = require('../gatsby-node')
+const { pluginOptionsSchema, createSchemaCustomization, createResolvers } = require('../gatsby-node')
 const { typeDefs } = require('../schema')
 const { loadFresh, loadWithMockClock, run } = require('./mock-clock')
 
@@ -212,6 +213,25 @@ describe('createSchemaCustomization', () => {
     const types = []
     createSchemaCustomization({ actions: { createTypes: definitions => types.push(definitions) } })
     assert.deepEqual(types, [typeDefs])
+  })
+})
+
+describe('createResolvers', () => {
+  test('resolve job metadata against the schema that Gatsby inferred from the jobs', () => {
+    const resolvers = []
+    const jobs = [{ internal: { type: 'GreenhouseJob' }, metadata: [{ name: 'Featured on Website', value: [] }] }]
+    createResolvers({
+      createResolvers: definitions => resolvers.push(definitions),
+      intermediateSchema: buildSchema(`
+        type GreenhouseJobMetadata { name: String value: String }
+        type Query { metadata: [GreenhouseJobMetadata] }
+      `),
+      getNodesByType: type => jobs.filter(node => node.internal.type === type),
+    })
+
+    assert.equal(resolvers.length, 1)
+    assert.deepEqual(resolvers[0].GreenhouseJobMetadata, { id: { type: 'Float' } })
+    assert.equal(typeof resolvers[0].GreenhouseJob.metadata.resolve, 'function')
   })
 })
 

@@ -128,6 +128,11 @@ A job without a department or office has `null` for `departments` or `offices`.
         offices {
           name
         }
+        metadata {
+          name
+          value_type
+          value
+        }
       }
     }
   }
@@ -138,11 +143,22 @@ A job without a department or office has `null` for `departments` or `offices`.
 Anyone who can edit job posts in Greenhouse controls this HTML.
 Decode it and run it through an HTML sanitizer before rendering it with `dangerouslySetInnerHTML`.
 
+#### Metadata
+
+`metadata` lists the values of the board's custom fields, with `id`, `name`, `value_type` and `value`, which a site can query on every board.
+A job without custom fields has `null` for `metadata`.
+Gatsby infers the type of `value` from the values that Greenhouse sends for the board.
+Where they all have one type, such as strings, `value` has that type.
+A value of another type is `null` in query results, such as an empty list among strings, which Greenhouse sends for a multi-select field without a value.
+Filters see each value as Greenhouse sends it, so `value: { eq: null }` does not match an empty list.
+Where the values have different types, such as `true` and `"Remote"`, or no job has custom fields, `value` is `JSON`, and each value comes back as Greenhouse sends it.
+
 ### Query departments
 
 Department data links to `jobs` from which all data mentioned in the previous example can be queried.
 Departments can also have parent/child relationships which are linked when available.
 A department without jobs has `null` for `jobs`.
+Its sub-departments are also in `childrenGreenhouseDepartment`, a list that is empty for a department without any, which a site can query on every board.
 
 ```graphql
 {
@@ -176,6 +192,7 @@ A department without jobs has `null` for `jobs`.
 Office data links to both `departments` and `jobs` from which all data mentioned in the previous examples can be queried.
 Offices can also have parent/child relationships which are linked when available.
 An office without departments has `null` for `departments`, and an office with departments has a list of `jobs`, which is empty when none of its departments has jobs.
+Its sub-offices are also in `childrenGreenhouseOffice`, a list that is empty for an office without any, which a site can query on every board.
 
 ```graphql
 {

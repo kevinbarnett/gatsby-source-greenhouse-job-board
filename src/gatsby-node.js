@@ -13,7 +13,7 @@ const {
   addContentDigests
 } = require(`./normalize`)
 
-const { typeDefs } = require(`./schema`)
+const { typeDefs, inferredFieldResolvers } = require(`./schema`)
 
 const chalk = require('chalk')
 
@@ -48,6 +48,10 @@ exports.pluginOptionsSchema = ({ Joi }) => {
 
 exports.createSchemaCustomization = ({ actions }) => {
   actions.createTypes(typeDefs)
+}
+
+exports.createResolvers = ({ createResolvers, intermediateSchema, getNodesByType }) => {
+  createResolvers(inferredFieldResolvers(intermediateSchema, getNodesByType(`GreenhouseJob`)))
 }
 
 // Offices and departments store their Greenhouse sub-offices and sub-departments as Gatsby children.

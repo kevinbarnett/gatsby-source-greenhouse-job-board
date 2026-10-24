@@ -46,7 +46,7 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
   const departmentSummary = ({ id, name, parent, children }) => ({
     id, name, parent_id: parent, child_ids: children,
   })
-  const listing = ({ id, title }) => ({
+  const listing = ({ id, title, metadata = null }) => ({
     id,
     internal_job_id: id + 1000,
     title,
@@ -57,7 +57,7 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
     company_name: 'Acme',
     language: 'en',
     location: { name: 'Remote' },
-    metadata: null,
+    metadata,
   })
   const jobsIn = (department, office) => jobs
     .filter(job => (job.department ?? 0) === department.id && (!office || (job.office ?? 0) === office.id))
@@ -108,17 +108,19 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
 
 // Runs `gatsby build` for the site, with the plugin added once for each of the options in `plugins`
 // and `routes` as the responses of the Greenhouse API, and returns Gatsby's exit code, what it
-// printed, and the result of running `query` while the site creates its pages, if the build got that far
-const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], query, clean }) => {
+// printed, and the results of running `queries` one after another while the site creates its pages,
+// if the build got that far. Each query is a string, or an object with the query and its variables.
+// The site declares `typeDefs` as types of its own, if given.
+const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], typeDefs = '', queries, clean }) => {
   if (clean) {
     for (const dir of ['.cache', 'public']) {
       fs.rmSync(path.join(siteDir, dir), { recursive: true, force: true })
     }
   }
   const mockFile = path.join(tmpDir, 'greenhouse.json')
-  const resultFile = path.join(tmpDir, 'result.json')
+  const resultsFile = path.join(tmpDir, 'results.json')
   fs.writeFileSync(mockFile, JSON.stringify(routes))
-  fs.rmSync(resultFile, { force: true })
+  fs.rmSync(resultsFile, { force: true })
 
   const gatsby = spawn(process.execPath, [gatsbyCli, 'build'], {
     cwd: siteDir,
@@ -130,9 +132,10 @@ const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], query, 
         .filter(Boolean)
         .join(' '),
       E2E_PLUGIN_OPTIONS: JSON.stringify(plugins),
+      E2E_TYPE_DEFS: typeDefs,
       GREENHOUSE_MOCK: mockFile,
-      E2E_QUERY: query,
-      E2E_RESULT: resultFile,
+      E2E_QUERIES: JSON.stringify(queries.map(query => (typeof query === 'string' ? { query } : query))),
+      E2E_RESULTS: resultsFile,
     },
     timeout: 120_000,
   })
@@ -140,29 +143,36 @@ const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], query, 
   gatsby.stdout.on('data', data => { output += data })
   gatsby.stderr.on('data', data => { output += data })
   const [code] = await once(gatsby, 'close')
-  const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile, 'utf8')) : undefined
-  return { code, output: stripVTControlCharacters(output), result }
+  const results = fs.existsSync(resultsFile) ? JSON.parse(fs.readFileSync(resultsFile, 'utf8')) : undefined
+  return { code, output: stripVTControlCharacters(output), results }
 }
 
-// Builds the site, serving `board` as the Greenhouse API, and returns the result of running `query`
-// while the site creates its pages, along with what Gatsby printed. A site that sources several
-// boards gives `boards` instead, as a list of `{ boardToken, board }`, and adds the plugin once for each.
-// `routes` replaces the responses made from the boards, for a test that changes them.
+// Builds the site, serving `board` as the Greenhouse API, and returns the data of running `query`
+// while the site creates its pages, along with what Gatsby printed. `query` can also be an object of
+// named queries, which run one after another, and then the data is an object with that of each. A
+// site that sources several boards gives `boards` instead, as a list of `{ boardToken, board }`, and
+// adds the plugin once for each. `routes` replaces the responses made from the boards, for a test
+// that changes them.
 const build = async ({
   board, boardToken = 'acme', boards = [{ boardToken, board }],
   routes = Object.assign({}, ...boards.map(({ boardToken, board }) => greenhouseRoutes(board, boardToken))),
-  options, query, clean = true,
+  options, typeDefs, query, clean = true,
 }) => {
-  const { code, output, result } = await gatsbyBuild({
+  const queries = typeof query === 'string' ? { query } : query
+  const { code, output, results } = await gatsbyBuild({
     routes,
     plugins: boards.map(({ boardToken }) => ({ boardToken, ...options })),
-    query,
+    typeDefs,
+    queries: Object.values(queries),
     clean,
   })
   assert.equal(code, 0, `gatsby build failed:\n${output}`)
-  const { data, errors } = result
-  assert.equal(errors, undefined, `the query failed:\n${JSON.stringify(errors, null, 2)}`)
-  return { data, output }
+  const data = Object.fromEntries(Object.keys(queries).map((name, i) => {
+    const { data, errors } = results[i]
+    assert.equal(errors, undefined, `the query ${name} failed:\n${JSON.stringify(errors, null, 2)}`)
+    return [name, data]
+  }))
+  return { data: typeof query === 'string' ? data.query : data, output }
 }
 
 const linksQuery = `{
@@ -172,6 +182,7 @@ const linksQuery = `{
       name
       parent { ... on GreenhouseOffice { gh_Id } }
       children { ... on GreenhouseOffice { gh_Id } }
+      childrenGreenhouseOffice { gh_Id }
       jobs { gh_Id }
     }
   }
@@ -181,6 +192,7 @@ const linksQuery = `{
       name
       parent { ... on GreenhouseDepartment { gh_Id } }
       children { ... on GreenhouseDepartment { gh_Id } }
+      childrenGreenhouseDepartment { gh_Id }
       jobs { gh_Id }
     }
   }
@@ -191,6 +203,7 @@ const linksQuery = `{
       updated_at(formatString: "YYYY-MM-DD")
       location { name }
       questions { required label description fields { name type } }
+      metadata { id name value_type value }
       departments { gh_Id }
       offices { gh_Id }
     }
@@ -200,15 +213,19 @@ const linksQuery = `{
 // Greenhouse ids of linked nodes, in order, or null for a node that links to none of a kind
 const ids = nodes => nodes && nodes.map(node => node.gh_Id).sort((a, b) => a - b)
 
-// What the site sees of each office, department and job, keyed by Greenhouse id
+// What the site sees of each office, department and job, keyed by Greenhouse id. The children of an
+// office or department are also its childrenGreenhouseOffice or childrenGreenhouseDepartment.
 const linksOf = data => {
   const byId = (nodes, describe) => Object.fromEntries(nodes.map(node => [node.gh_Id, describe(node)]))
-  const tree = ({ name, parent, children, jobs }) => ({
-    name, parent: parent && parent.gh_Id, children: ids(children), jobs: ids(jobs),
-  })
+  const tree = typedChildren => ({ name, parent, children, jobs, ...node }) => {
+    // a list even where there are none, so a site can query it on every board
+    assert.ok(Array.isArray(node[typedChildren]), `${typedChildren} of ${name} is not a list`)
+    assert.deepEqual(ids(node[typedChildren]), ids(children), `${typedChildren} of ${name}`)
+    return { name, parent: parent && parent.gh_Id, children: ids(children), jobs: ids(jobs) }
+  }
   return {
-    offices: byId(data.allGreenhouseOffice.nodes, tree),
-    departments: byId(data.allGreenhouseDepartment.nodes, tree),
+    offices: byId(data.allGreenhouseOffice.nodes, tree('childrenGreenhouseOffice')),
+    departments: byId(data.allGreenhouseDepartment.nodes, tree('childrenGreenhouseDepartment')),
     jobs: byId(data.allGreenhouseJob.nodes, ({ title, departments, offices }) => ({
       title, departments: ids(departments), offices: ids(offices),
     })),
@@ -236,6 +253,28 @@ const jobs = [
   { id: 102, title: 'Account Manager', department: 5, office: 10 },
   { id: 103, title: 'Office Manager', department: null, office: 11 },
 ]
+
+// What linksOf gives for these offices, departments and jobs
+const boardLinks = {
+  offices: {
+    10: { name: 'Europe', parent: null, children: [11], jobs: [101, 102] },
+    // including the job in "No Department"
+    11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
+  },
+  departments: {
+    1: { name: 'Engineering', parent: null, children: [2, 3], jobs: null },
+    2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
+    3: { name: 'Backend', parent: 1, children: [], jobs: [101] },
+    4: { name: 'Sales', parent: null, children: [5], jobs: null },
+    5: { name: 'Account Management', parent: 4, children: [], jobs: [102] },
+  },
+  jobs: {
+    100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
+    101: { title: 'Backend Engineer', departments: [3], offices: [10] },
+    102: { title: 'Account Manager', departments: [5], offices: [10] },
+    103: { title: 'Office Manager', departments: null, offices: [11] },
+  },
+}
 
 test('the package contains only the plugin', () => {
   assert.deepEqual(fs.readdirSync(pluginDir, { recursive: true }).sort(), [
@@ -269,33 +308,16 @@ test('the package only requires Node.js modules, its own files and its dependenc
 test('a site can query offices, departments and jobs, and how they link up', async () => {
   const { data } = await build({ board: { offices, departments, jobs }, query: linksQuery })
 
-  assert.deepEqual(linksOf(data), {
-    offices: {
-      10: { name: 'Europe', parent: null, children: [11], jobs: [101, 102] },
-      // including the job in "No Department"
-      11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
-    },
-    departments: {
-      1: { name: 'Engineering', parent: null, children: [2, 3], jobs: null },
-      2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
-      3: { name: 'Backend', parent: 1, children: [], jobs: [101] },
-      4: { name: 'Sales', parent: null, children: [5], jobs: null },
-      5: { name: 'Account Management', parent: 4, children: [], jobs: [102] },
-    },
-    jobs: {
-      100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
-      101: { title: 'Backend Engineer', departments: [3], offices: [10] },
-      102: { title: 'Account Manager', departments: [5], offices: [10] },
-      103: { title: 'Office Manager', departments: null, offices: [11] },
-    },
-  })
+  assert.deepEqual(linksOf(data), boardLinks)
 
-  const { updated_at, location, questions } = data.allGreenhouseJob.nodes.find(job => job.gh_Id === 100)
-  assert.deepEqual({ updated_at, location, questions }, {
+  const { updated_at, location, questions, metadata } = data.allGreenhouseJob.nodes.find(job => job.gh_Id === 100)
+  assert.deepEqual({ updated_at, location, questions, metadata }, {
     updated_at: '2026-10-01',
     location: { name: 'Remote' },
     // no question of the board has a description
     questions: [{ required: true, label: 'First Name', description: null, fields: [{ name: 'first_name', type: 'input_text' }] }],
+    // and no job has custom fields
+    metadata: null,
   })
 })
 
@@ -472,8 +494,8 @@ test('a site can query a board that has no offices, departments or jobs', async 
   const { data } = await build({
     board: { offices: [], departments: [], jobs: [] },
     query: `{
-      allGreenhouseOffice { nodes { name location departments { name } jobs { title } } }
-      allGreenhouseDepartment { nodes { name jobs { title } } }
+      allGreenhouseOffice { nodes { name location childrenGreenhouseOffice { name } departments { name } jobs { title } } }
+      allGreenhouseDepartment { nodes { name childrenGreenhouseDepartment { name } jobs { title } } }
       allGreenhouseJob {
         nodes {
           title
@@ -485,6 +507,7 @@ test('a site can query a board that has no offices, departments or jobs', async 
           first_published(formatString: "YYYY-MM-DD")
           location { name }
           questions { required label description fields { name type } }
+          metadata { id name value_type value }
           departments { name }
           offices { name }
         }
@@ -499,6 +522,172 @@ test('a site can query a board that has no offices, departments or jobs', async 
   })
 })
 
+// A board where no office or department has sub-offices or sub-departments, and what linksOf gives
+// for it
+const flatBoard = {
+  offices: [{ id: 10, name: 'Remote', location: null, parent: null, children: [] }],
+  departments: [{ id: 1, name: 'Engineering', parent: null, children: [] }],
+  jobs: [{ id: 100, title: 'Engineer', department: 1, office: 10 }],
+}
+const flatBoardLinks = {
+  offices: { 10: { name: 'Remote', parent: null, children: [], jobs: [100] } },
+  departments: { 1: { name: 'Engineering', parent: null, children: [], jobs: [100] } },
+  jobs: { 100: { title: 'Engineer', departments: [1], offices: [10] } },
+}
+
+test('a site can query sub-offices and sub-departments on a board where no office or department has any', async () => {
+  const { data } = await build({ board: flatBoard, query: linksQuery })
+
+  assert.deepEqual(linksOf(data), flatBoardLinks)
+})
+
+test('a site that declared sub-offices, sub-departments and metadata itself for earlier versions still gets them', async t => {
+  // Earlier versions left these fields out where no office or department had any sub-offices or
+  // sub-departments, or no job had any metadata, so a site could declare them like this
+  const typeDefs = `
+    type GreenhouseDepartment implements Node @childOf(types: ["GreenhouseDepartment"]) {
+      name: String
+    }
+    type GreenhouseOffice implements Node {
+      childrenGreenhouseOffice: [GreenhouseOffice] @link(from: "children")
+    }
+    type GreenhouseJob implements Node {
+      metadata: [GreenhouseJobMetadata]
+    }
+    type GreenhouseJobMetadata {
+      id: Int
+      name: String
+      value_type: String
+      value: String
+    }
+  `
+
+  await t.test('on a board with sub-offices and sub-departments', async () => {
+    const { data } = await build({ board: { offices, departments, jobs }, typeDefs, query: linksQuery })
+
+    assert.deepEqual(linksOf(data), boardLinks)
+  })
+
+  await t.test('on a board without', async () => {
+    const { data } = await build({ board: flatBoard, typeDefs, query: linksQuery })
+
+    assert.deepEqual(linksOf(data), flatBoardLinks)
+  })
+})
+
+// Jobs list the values of the board's custom fields in their metadata. The type of a value depends
+// on the value_type of its custom field.
+const jobsWithMetadata = metadata => jobs.map((job, i) => ({ ...job, metadata: metadata[i] }))
+
+const jobsQuery = filter => `{ allGreenhouseJob(filter: ${filter}, sort: { gh_Id: ASC }) { nodes { gh_Id } } }`
+
+const metadataQuery = '{ allGreenhouseJob(sort: { gh_Id: ASC }) { nodes { gh_Id metadata { id name value_type value } } } }'
+
+test('a site can query and filter job metadata where a value is an empty list, and the others are strings', async () => {
+  // Greenhouse sends an empty list for a multi_select field without a value
+  const featured = { id: 1, name: 'Featured on Website', value_type: 'multi_select', value: [] }
+  const team = value => ({ id: 2, name: 'Careers Site Department', value_type: 'single_select', value })
+  const { data } = await build({
+    board: {
+      offices,
+      departments,
+      jobs: jobsWithMetadata([[featured, team('Engineering')], [featured, team(null)], [featured, team('Sales')], null]),
+    },
+    // Gatsby resolves the metadata of every job to filter jobs, and keeps the result for later
+    // queries. The order makes sure that one filter does not change what the next one finds.
+    query: {
+      withoutValue: jobsQuery('{ metadata: { elemMatch: { value: { eq: null } } } }'),
+      inATeam: jobsQuery('{ metadata: { elemMatch: { name: { eq: "Careers Site Department" }, value: { ne: null } } } }'),
+      // the value is a String, as in earlier versions
+      inTeam: {
+        query: `query ($team: String) {
+          allGreenhouseJob(filter: { metadata: { elemMatch: { value: { eq: $team } } } }, sort: { gh_Id: ASC }) { nodes { gh_Id } }
+        }`,
+        variables: { team: 'Engineering' },
+      },
+      metadata: metadataQuery,
+    },
+  })
+
+  assert.deepEqual({
+    withoutValue: ids(data.withoutValue.allGreenhouseJob.nodes),
+    inATeam: ids(data.inATeam.allGreenhouseJob.nodes),
+    inTeam: ids(data.inTeam.allGreenhouseJob.nodes),
+  }, {
+    // as in earlier versions, an empty list is not null, and a job without metadata is
+    withoutValue: [101, 103],
+    inATeam: [100, 102],
+    inTeam: [100],
+  })
+  // a String cannot be a list, so the empty lists are null
+  const unset = { ...featured, value: null }
+  assert.deepEqual(data.metadata.allGreenhouseJob.nodes, [
+    { gh_Id: 100, metadata: [unset, team('Engineering')] },
+    { gh_Id: 101, metadata: [unset, team(null)] },
+    { gh_Id: 102, metadata: [unset, team('Sales')] },
+    { gh_Id: 103, metadata: null },
+  ])
+})
+
+test('a site can query job metadata where values have different types, and gets each value as Greenhouse sends it', async () => {
+  const remote = { id: 1, name: 'Remote Eligible', value_type: 'yes_no', value: true }
+  const arrangement = { id: 2, name: 'Work Arrangement', value_type: 'single_select', value: 'Remote' }
+  const locations = { id: 3, name: 'Locations', value_type: 'multi_select', value: ['Remote', 'Hybrid'] }
+  const salary = { id: 4, name: 'Salary', value_type: 'currency', value: { unit: 'USD', amount: '100.0' } }
+  const { data } = await build({
+    board: { offices, departments, jobs: jobsWithMetadata([[remote, arrangement], [locations], [salary], []]) },
+    query: metadataQuery,
+  })
+
+  assert.deepEqual(data.allGreenhouseJob.nodes, [
+    { gh_Id: 100, metadata: [remote, arrangement] },
+    { gh_Id: 101, metadata: [locations] },
+    { gh_Id: 102, metadata: [salary] },
+    { gh_Id: 103, metadata: [] },
+  ])
+})
+
+test('a site that declared metadata values as JSON for earlier versions still gets them as sent, and filters them as before', async () => {
+  const featured = value => ({ id: 1, name: 'Featured on Website', value_type: 'multi_select', value })
+  const team = value => ({ id: 2, name: 'Careers Site Department', value_type: 'single_select', value })
+  const remote = { id: 3, name: 'Remote Eligible', value_type: 'yes_no', value: true }
+  const salary = { id: 4, name: 'Salary', value_type: 'currency', value: { unit: 'USD', amount: '100.0' } }
+  const metadata = [
+    [featured([]), team('Engineering'), remote],
+    [featured([]), team(null)],
+    [featured(['Careers Site']), team('Sales'), salary],
+    null,
+  ]
+  const { data } = await build({
+    board: { offices, departments, jobs: jobsWithMetadata(metadata) },
+    // Earlier versions failed on empty lists among strings, and left the field out where values had
+    // different types, so a site could declare it like this
+    typeDefs: 'type GreenhouseJobMetadata { value: JSON }',
+    query: {
+      withoutValue: jobsQuery('{ metadata: { elemMatch: { value: { eq: null } } } }'),
+      inTeam: jobsQuery('{ metadata: { elemMatch: { value: { eq: "Engineering" } } } }'),
+      featuredOnCareersSite: jobsQuery('{ metadata: { elemMatch: { value: { eq: "Careers Site" } } } }'),
+      remote: jobsQuery('{ metadata: { elemMatch: { value: { eq: true } } } }'),
+      metadata: metadataQuery,
+    },
+  })
+
+  assert.deepEqual({
+    withoutValue: ids(data.withoutValue.allGreenhouseJob.nodes),
+    inTeam: ids(data.inTeam.allGreenhouseJob.nodes),
+    featuredOnCareersSite: ids(data.featuredOnCareersSite.allGreenhouseJob.nodes),
+    remote: ids(data.remote.allGreenhouseJob.nodes),
+  }, {
+    // as in earlier versions, an empty list is not null, but Gatsby's filters take an object, like
+    // the salary, for null
+    withoutValue: [101, 102, 103],
+    inTeam: [100],
+    featuredOnCareersSite: [102],
+    remote: [100],
+  })
+  assert.deepEqual(data.metadata.allGreenhouseJob.nodes, metadata.map((metadata, i) => ({ gh_Id: jobs[i].id, metadata })))
+})
+
 test('a site can give the board token as a number, which earlier versions used as it was', async () => {
   const { data, output } = await build({
     board: { offices, departments, jobs },
@@ -511,15 +700,15 @@ test('a site can give the board token as a number, which earlier versions used a
 })
 
 test('a build with an unknown board token fails, and says once which request failed', async () => {
-  const { code, output, result } = await gatsbyBuild({
+  const { code, output, results } = await gatsbyBuild({
     // what Greenhouse answers for a board that does not exist
     routes: { '/v1/boards/acme/offices/': { status: 404, body: { status: 404, error: 'Office not found' } } },
-    query: '{ site { id } }',
+    queries: ['{ site { id } }'],
     clean: true,
   })
 
   assert.notEqual(code, 0)
-  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.equal(results, undefined, 'the build went on to create pages')
   // Gatsby prints the message, and then the error again with its stack trace
   const messages = output.split('\n')
     .filter(line => line.includes('Failed to fetch') && !line.trimStart().startsWith('Error:'))
@@ -530,16 +719,16 @@ test('a build with an unknown board token fails, and says once which request fai
 })
 
 test('a build with a blank board token, or one of 0, fails before sending any request, and says why', async () => {
-  const { code, output, result } = await gatsbyBuild({
+  const { code, output, results } = await gatsbyBuild({
     // no responses, so any request would fail with a different error
     routes: {},
     plugins: [{ boardToken: '  ' }, { boardToken: 0 }],
-    query: '{ site { id } }',
+    queries: ['{ site { id } }'],
     clean: true,
   })
 
   assert.notEqual(code, 0)
-  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.equal(results, undefined, 'the build went on to create pages')
   assert.match(output, /Invalid plugin options for "gatsby-source-greenhouse-job-board"/)
   assert.match(output, /"boardToken" is not allowed to be empty/)
   assert.match(output, /"boardToken" must be a positive number/)
@@ -558,16 +747,16 @@ test('a site can set how many requests to send in any minute', async () => {
 })
 
 test('a build with requests per minute or a timeout below 1 fails before sending any request, and says why', async () => {
-  const { code, output, result } = await gatsbyBuild({
+  const { code, output, results } = await gatsbyBuild({
     // no responses, so any request would fail with a different error
     routes: {},
     plugins: [{ boardToken: 'acme', requestsPerMinute: 0, timeout: 0 }],
-    query: '{ site { id } }',
+    queries: ['{ site { id } }'],
     clean: true,
   })
 
   assert.notEqual(code, 0)
-  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.equal(results, undefined, 'the build went on to create pages')
   assert.match(output, /Invalid plugin options for "gatsby-source-greenhouse-job-board"/)
   assert.match(output, /"requestsPerMinute" must be greater than or equal to 1/)
   assert.match(output, /"timeout" must be greater than or equal to 1/)
@@ -594,15 +783,15 @@ test('a site can set how long to wait for each request, for a board that Greenho
 })
 
 test('a build fails when Greenhouse takes longer than the timeout, and says which option to raise', async () => {
-  const { code, output, result } = await gatsbyBuild({
+  const { code, output, results } = await gatsbyBuild({
     routes: withSlowOffices({ offices, departments, jobs }, 2000),
     plugins: [{ boardToken: 'acme', timeout: 100 }],
-    query: '{ site { id } }',
+    queries: ['{ site { id } }'],
     clean: true,
   })
 
   assert.notEqual(code, 0)
-  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.equal(results, undefined, 'the build went on to create pages')
   // Gatsby prints the message, and then the error again with its stack trace
   const messages = output.split('\n')
     .filter(line => line.includes('Failed to fetch') && !line.trimStart().startsWith('Error:'))
