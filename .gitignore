@@ -3,3 +3,5 @@ node_modules/
 !index.js
 package-lock.json
 yarn.lock
+e2e/site/.cache/
+e2e/site/public/

@@ -9,18 +9,15 @@ const types = {
 // Uses Gatsby's native createNodeId and standard node structure
 const createNodeFactory = (type, createNodeId) => {
   return (data) => {
-    const nodeId = createNodeId(`${typePrefix}${type}-${data.id}`)
     return {
       ...data,
-      id: nodeId,
+      // Gatsby uses `id` for its own node id, so keep the Greenhouse id where v1 put it
+      gh_Id: data.id,
+      id: createNodeId(`${typePrefix}${type}-${data.id}`),
       parent: null,
       children: [],
       internal: {
         type: `${typePrefix}${type}`,
-        contentDigest: require('crypto')
-          .createHash('md5')
-          .update(JSON.stringify(data))
-          .digest('hex'),
       },
     }
   }
@@ -30,19 +27,14 @@ const isNotEmpty = (arr) => {
   return Boolean(arr && Array.isArray(arr) && arr.length)
 }
 
-const filterResponseForIds = (response) => {
-  if (isNotEmpty(response)) {
-    return response.filter(obj => {
-      if (obj.departments) {
-        // recurse over nested department lists
-        obj.departments = filterResponseForIds(obj.departments)
-      }
-      return Boolean(obj && obj.id)
-    })
-  }
-}
+// Greenhouse ids, leaving out "No Office" and "No Department", which have an id of 0
+const greenhouseIds = (objects) => (objects || []).filter(obj => Boolean(obj && obj.id)).map(obj => obj.id)
 
-exports.filterResponseForIds = filterResponseForIds
+// Greenhouse API will return "No Office" and "No Department" entities with an ID of 0. Let's remove these.
+// Only the top level is filtered, so an office still links to the jobs listed under its "No Department".
+exports.filterResponseForIds = (response) => {
+  return isNotEmpty(response) ? response.filter(obj => Boolean(obj && obj.id)) : []
+}
 
 exports.buildNodesFromResponse = (response, createNodeId) => {
   let nodes = new Array
@@ -75,97 +67,98 @@ exports.buildNodesFromResponse = (response, createNodeId) => {
   return nodes
 }
 
-exports.linkParentChildReferences = (nodes, createNodeId) => {
+// Returns a function that turns Greenhouse ids into node ids, leaving out duplicates and ids
+// that have no node, such as a job that closed while the plugin was fetching
+exports.createLinker = (nodes, createNodeId) => {
+  const nodeIds = new Set(nodes.map(node => node.id))
+  return (type, ids) => {
+    const linkedIds = ids.map(id => createNodeId(`${typePrefix}${type}-${id}`))
+    return [...new Set(linkedIds)].filter(id => nodeIds.has(id))
+  }
+}
+
+exports.linkParentChildReferences = (nodes, linkTo) => {
   return nodes.map(node => {
     const type = String(node.internal.type).replace(typePrefix, '')
     // look for nodes with child ids (set by Greenhouse)
     if (isNotEmpty(node.child_ids)) {
-      node.children = node.child_ids.map(id => {
-        return createNodeId(`${typePrefix}${type}-${id}`)
-      })
+      node.children = linkTo(type, node.child_ids)
     }
     // look for nodes with a parent id (set by Greenhouse)
     if (node.parent_id) {
-      node.parent = createNodeId(`${typePrefix}${type}-${node.parent_id}`)
+      node.parent = linkTo(type, [node.parent_id])[0] || null
     }
 
     return node
   })
 }
 
-// https://www.gatsbyjs.org/docs/schema-gql-type/#foreign-key-reference-___node
-exports.linkForeignReferences = (nodes, createNodeId) => {
+// https://www.gatsbyjs.com/docs/reference/graphql-data-layer/schema-customization/#foreign-key-fields
+exports.linkForeignReferences = (nodes, linkTo) => {
+  // Links a node to what Greenhouse listed for it, leaving out what has no node. A node that Greenhouse
+  // listed nothing for gets no link, so a site gets null, while one whose listed things all have no node
+  // gets an empty list, as 2.0 did
+  const setLinks = (node, field, type, ids) => {
+    if (ids.length) {
+      node[`${field}___NODE`] = linkTo(type, ids)
+    }
+  }
+
   return nodes.map(node => {
 
     // look for office nodes
-    if (node.internal.type === 'GreenhouseOffice') {
-      // look for departments nested in the office nodes
-      if (isNotEmpty(node.departments)) {
-        let officeJobNodeIds = new Array
-        // iterate on the list of departments and capture their node ids
-        const officeDepartmentNodeIds = node.departments.map(department => {
-          // look for jobs nested in the department node
-          if (isNotEmpty(department.jobs)) {
-            // iterate on the list of jobs and capture their node ids
-            const jobNodeIds = department.jobs.map(job => {
-              return createNodeId(`${typePrefix}Job-${job.id}`)
-            })
-            officeJobNodeIds = officeJobNodeIds.concat(jobNodeIds)
-            // remove the element as it will be rebuilt by Gatsby
-            delete department.jobs
-          }
-          return createNodeId(`${typePrefix}Department-${department.id}`)
-        })
-        // remove the element as it will be rebuilt by Gatsby
-        delete node.departments
-        // link the office to its departments
-        node.departments___NODE = officeDepartmentNodeIds
-        // link the offices to its jobs
-        node.jobs___NODE = officeJobNodeIds
+    if (node.internal.type === `${typePrefix}${types.office}`) {
+      const { departments } = node
+      // remove the element as it will be rebuilt by Gatsby
+      delete node.departments
+      // capture the jobs of every department nested in the office, including "No Department"
+      const jobs = (departments || []).flatMap(department => department.jobs || [])
+      const departmentIds = greenhouseIds(departments)
+      const jobIds = greenhouseIds(jobs)
+      // link the office to its departments
+      setLinks(node, 'departments', types.department, departmentIds)
+      // link the office to its jobs, as a list even when it is empty for an office with departments,
+      // as 2.0 did
+      if (departmentIds.length || jobIds.length) {
+        node.jobs___NODE = linkTo(types.job, jobIds)
       }
     }
 
     // look for department nodes
-    if (node.internal.type === 'GreenhouseDepartment') {
-      // look for jobs nested in the department nodes
-      if (isNotEmpty(node.jobs)) {
-        // iterate on the list of jobs and capture their node ids
-        const departmentJobNodeIds = node.jobs.map(job => {
-          return createNodeId(`${typePrefix}Job-${job.id}`)
-        })
-        // remove the element as it will be rebuilt by Gatsby
-        delete node.jobs
-        // link the department to its jobs
-        node.jobs___NODE = departmentJobNodeIds
-      }
+    if (node.internal.type === `${typePrefix}${types.department}`) {
+      const { jobs } = node
+      // remove the element as it will be rebuilt by Gatsby
+      delete node.jobs
+      // link the department to the jobs nested in it
+      setLinks(node, 'jobs', types.job, greenhouseIds(jobs))
     }
 
     // look for job nodes
-    if (node.internal.type === 'GreenhouseJob') {
-      // look for departments nested in the job nodes
-      if (isNotEmpty(node.departments)) {
-        // iterate on the list of the departments and capture their node ids
-        const jobDepartmentNodeIds = node.departments.map(department => {
-          return createNodeId(`${typePrefix}Department-${department.id}`)
-        })
-        // remove the element as it will be rebuilt by Gatsby
-        delete node.departments
-        // link the job to its department(s)
-        node.departments___NODE = jobDepartmentNodeIds
-      }
-      // look for offices nested in the job nodes
-      if (isNotEmpty(node.offices)) {
-        // iterate on the list of offices and capture their node ids
-        const jobOfficeNodeIds = node.offices.map(office => {
-          return createNodeId(`${typePrefix}Office-${office.id}`)
-        })
-        // remove the element as it will be rebuilt by Gatsby
-        delete node.offices
-        // link the job to its office(s)
-        node.offices___NODE = jobOfficeNodeIds
-      }
+    if (node.internal.type === `${typePrefix}${types.job}`) {
+      const { departments, offices } = node
+      // remove the elements as they will be rebuilt by Gatsby
+      delete node.departments
+      delete node.offices
+      // link the job to the department(s) and office(s) nested in it
+      setLinks(node, 'departments', types.department, greenhouseIds(departments))
+      setLinks(node, 'offices', types.office, greenhouseIds(offices))
     }
 
     return node
+  })
+}
+
+// Gatsby keeps a cached node as it is unless its digest changes, so the digest has to cover
+// everything on the node, including the links added above
+exports.addContentDigests = (nodes, createContentDigest) => {
+  return nodes.map(node => {
+    const { internal, ...content } = node
+    return {
+      ...node,
+      internal: {
+        ...internal,
+        contentDigest: createContentDigest(content),
+      },
+    }
   })
 }
