@@ -76,6 +76,8 @@ GraphQL model.
 All Greenhouse data is pulled using the Greenhouse Job Board API. Data is made available in the same structure as
 provided by the API, with a few exceptions noted below.
 
+Gatsby uses `id` for its own node id, so each node keeps its Greenhouse id in `gh_Id`.
+
 Three standard data types will be available from Greenhouse: Office, Department and Job.
 
 For each data type, `greenhouse${typeName}` and
@@ -123,6 +125,10 @@ allGreenhouseJob {
   }
 }
 ```
+
+**Note**: `content` is the job description as HTML, escaped the way the API sends it (for example `&lt;p&gt;`).
+Anyone who can edit job posts in Greenhouse controls this HTML.
+Decode it and run it through an HTML sanitizer before rendering it with `dangerouslySetInnerHTML`.
 
 ### Query departments
 

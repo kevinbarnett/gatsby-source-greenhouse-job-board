@@ -1,0 +1,10 @@
+{
+  "name": "greenhouse-job-board-e2e-site",
+  "private": true,
+  "description": "Gatsby site that e2e/build.test.js builds with the packed plugin, using the packages installed at the repository root",
+  "dependencies": {
+    "gatsby": "^5.16.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

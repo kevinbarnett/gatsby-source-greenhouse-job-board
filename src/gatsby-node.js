@@ -8,20 +8,50 @@ const {
   filterResponseForIds,
   buildNodesFromResponse,
   linkParentChildReferences,
-  linkForeignReferences
+  linkForeignReferences,
+  addContentDigests
 } = require(`./normalize`)
+
+const { typeDefs } = require(`./schema`)
 
 const chalk = require('chalk')
 
-exports.sourceNodes = async ({ actions, createNodeId, reporter }, pluginOptions) => {
-  const { createNode } = actions
-  const { boardToken } = pluginOptions
+exports.pluginOptionsSchema = ({ Joi }) => {
+  return Joi.object({
+    // earlier versions used the token as it was, so a number keeps working
+    boardToken: Joi.alternatives()
+      .try(Joi.string(), Joi.number())
+      .required()
+      .description(`Your Greenhouse job board token, listed under Configure > Dev Center > Configure Job Board`),
+  })
+}
 
-  if (!boardToken) {
-    reporter.panic(
-      chalk.red.bold('gatsby-source-greenhouse-job-board: Missing required option "boardToken"')
-    )
+exports.createSchemaCustomization = ({ actions }) => {
+  actions.createTypes(typeDefs)
+}
+
+// Offices and departments store their Greenhouse sub-offices and sub-departments as Gatsby children.
+// Gatsby deletes the children of a cached node when the node changes or goes away, which would delete
+// children created before their parent, or moved to another parent. Deleting those parents before
+// creating anything means Gatsby has no cached version of them left to clean up.
+const deleteChangedParents = (nodes, { getNode, getNodesByType, deleteNode }) => {
+  const digests = new Map(nodes.map(node => [node.id, node.internal.contentDigest]))
+
+  for (const type of [`GreenhouseOffice`, `GreenhouseDepartment`]) {
+    for (const cachedNode of getNodesByType(type)) {
+      const changed = digests.get(cachedNode.id) !== cachedNode.internal.contentDigest
+      // deleting a node also deletes its children, so check the node is still there
+      const node = changed && cachedNode.children.length > 0 && getNode(cachedNode.id)
+      if (node) {
+        deleteNode(node)
+      }
+    }
   }
+}
+
+exports.sourceNodes = async ({ actions, createNodeId, createContentDigest, getNode, getNodesByType, reporter }, pluginOptions) => {
+  const { createNode, deleteNode } = actions
+  const { boardToken } = pluginOptions
 
   let offices, departments, jobs
   let nodes
@@ -31,26 +61,29 @@ exports.sourceNodes = async ({ actions, createNodeId, reporter }, pluginOptions)
     reporter.info(chalk.blue('Fetching data from Greenhouse API...'))
     offices = await fetchOffices(boardToken)
     departments = await fetchDepartments(boardToken)
-    jobs = await fetchJobs(boardToken)
+    jobs = await fetchJobs(boardToken, {
+      onMissingJob: job => reporter.warn(
+        `gatsby-source-greenhouse-job-board: Skipping job ${job.id} (${job.title}), since Greenhouse no longer has its details`
+      ),
+    })
 
   } catch (error) {
-    reporter.panic(
-      chalk.red.bold(`gatsby-source-greenhouse-job-board: Failed to fetch data from Greenhouse API\n${error.message}`),
-      error
-    )
+    // Gatsby adds the error's message, which already says what failed to fetch
+    reporter.panic(chalk.red.bold(`gatsby-source-greenhouse-job-board:`), error)
+    return
   }
 
+  // Greenhouse API will return "No Office" and "No Department" entities with an ID of 0. Let's remove these.
+  offices = filterResponseForIds(offices)
+  departments = filterResponseForIds(departments)
+  jobs = filterResponseForIds(jobs)
+
   reporter.info(
-    chalk.blue('info') + ' fetched from Greenhouse API:\n' +
+    'Fetched from Greenhouse API:\n' +
     `  ${chalk.bold(jobs.length)} jobs,\n` +
     `  ${chalk.bold(offices.length)} offices,\n` +
     `  ${chalk.bold(departments.length)} departments`
   )
-
-  // Greenhouse API will return "No Office" and "No Department" entities with an ID of 0. Let's remove these.
-  offices = filterResponseForIds(offices) || []
-  departments = filterResponseForIds(departments) || []
-  jobs = filterResponseForIds(jobs) || []
 
   // Construct the node objects from the API responses
   nodes = buildNodesFromResponse({ offices, departments, jobs }, createNodeId)
@@ -63,6 +96,10 @@ exports.sourceNodes = async ({ actions, createNodeId, reporter }, pluginOptions)
   // Link Departments to Jobs
   // Link Jobs to Departments and Offices
   nodes = linkForeignReferences(nodes, createNodeId)
+
+  nodes = addContentDigests(nodes, createContentDigest)
+
+  deleteChangedParents(nodes, { getNode, getNodesByType, deleteNode })
 
   // Create the nodes with Gatsby
   await Promise.all(
