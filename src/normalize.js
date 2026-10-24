@@ -27,15 +27,8 @@ const isNotEmpty = (arr) => {
   return Boolean(arr && Array.isArray(arr) && arr.length)
 }
 
-const greenhouseIds = (objects) => (objects || []).map(obj => obj.id)
-
-// Sets a link only when it links to something, so that a site gets null for an empty list, whether
-// Greenhouse listed nothing or only things that have no node, as 2.0 did for an empty list
-const setLinks = (node, field, nodeIds) => {
-  if (nodeIds.length) {
-    node[`${field}___NODE`] = nodeIds
-  }
-}
+// Greenhouse ids, leaving out "No Office" and "No Department", which have an id of 0
+const greenhouseIds = (objects) => (objects || []).filter(obj => Boolean(obj && obj.id)).map(obj => obj.id)
 
 // Greenhouse API will return "No Office" and "No Department" entities with an ID of 0. Let's remove these.
 // Only the top level is filtered, so an office still links to the jobs listed under its "No Department".
@@ -75,7 +68,7 @@ exports.buildNodesFromResponse = (response, createNodeId) => {
 }
 
 // Returns a function that turns Greenhouse ids into node ids, leaving out duplicates and ids
-// that have no node, such as "No Department" or a job that closed while the plugin was fetching
+// that have no node, such as a job that closed while the plugin was fetching
 exports.createLinker = (nodes, createNodeId) => {
   const nodeIds = new Set(nodes.map(node => node.id))
   return (type, ids) => {
@@ -102,6 +95,15 @@ exports.linkParentChildReferences = (nodes, linkTo) => {
 
 // https://www.gatsbyjs.com/docs/reference/graphql-data-layer/schema-customization/#foreign-key-fields
 exports.linkForeignReferences = (nodes, linkTo) => {
+  // Links a node to what Greenhouse listed for it, leaving out what has no node. A node that Greenhouse
+  // listed nothing for gets no link, so a site gets null, while one whose listed things all have no node
+  // gets an empty list, as 2.0 did
+  const setLinks = (node, field, type, ids) => {
+    if (ids.length) {
+      node[`${field}___NODE`] = linkTo(type, ids)
+    }
+  }
+
   return nodes.map(node => {
 
     // look for office nodes
@@ -111,14 +113,14 @@ exports.linkForeignReferences = (nodes, linkTo) => {
       delete node.departments
       // capture the jobs of every department nested in the office, including "No Department"
       const jobs = (departments || []).flatMap(department => department.jobs || [])
-      const departmentIds = linkTo(types.department, greenhouseIds(departments))
-      const jobIds = linkTo(types.job, greenhouseIds(jobs))
+      const departmentIds = greenhouseIds(departments)
+      const jobIds = greenhouseIds(jobs)
       // link the office to its departments
-      setLinks(node, 'departments', departmentIds)
+      setLinks(node, 'departments', types.department, departmentIds)
       // link the office to its jobs, as a list even when it is empty for an office with departments,
       // as 2.0 did
       if (departmentIds.length || jobIds.length) {
-        node.jobs___NODE = jobIds
+        node.jobs___NODE = linkTo(types.job, jobIds)
       }
     }
 
@@ -128,7 +130,7 @@ exports.linkForeignReferences = (nodes, linkTo) => {
       // remove the element as it will be rebuilt by Gatsby
       delete node.jobs
       // link the department to the jobs nested in it
-      setLinks(node, 'jobs', linkTo(types.job, greenhouseIds(jobs)))
+      setLinks(node, 'jobs', types.job, greenhouseIds(jobs))
     }
 
     // look for job nodes
@@ -138,8 +140,8 @@ exports.linkForeignReferences = (nodes, linkTo) => {
       delete node.departments
       delete node.offices
       // link the job to the department(s) and office(s) nested in it
-      setLinks(node, 'departments', linkTo(types.department, greenhouseIds(departments)))
-      setLinks(node, 'offices', linkTo(types.office, greenhouseIds(offices)))
+      setLinks(node, 'departments', types.department, greenhouseIds(departments))
+      setLinks(node, 'offices', types.office, greenhouseIds(offices))
     }
 
     return node

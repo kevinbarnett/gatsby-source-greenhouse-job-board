@@ -221,6 +221,7 @@ To stay well below that, the plugin sends at most 2,000 requests a minute by def
 A build that fetches more than about 2,000 jobs then takes about a minute longer for every further 2,000 jobs, instead of failing.
 The plugin retries timeouts, network errors, HTTP status 429 and server errors up to 3 times, but not 403, since a block lasts longer than the retries would wait.
 When Greenhouse lists a job but no longer has its details, usually because the job closed during the build, the plugin leaves the job out and warns about it.
+The job is also left out of the `jobs` of its departments and offices, so a department whose only job closed has an empty list.
 If that happens to more than half of the jobs, the build fails instead, since Greenhouse is then more likely failing than closing jobs.
 The plugin can only count the requests of its own build, so builds that run at the same time from one IP address, for example on shared CI runners, can still get blocked.
 If a build fails with HTTP status 403, wait a minute and build again.

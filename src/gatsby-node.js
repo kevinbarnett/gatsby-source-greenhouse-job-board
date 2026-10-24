@@ -54,26 +54,42 @@ exports.createSchemaCustomization = ({ actions }) => {
 // Gatsby deletes the children of a cached node when the node changes or goes away, which would delete
 // children created before their parent, or moved to another parent. Deleting those parents before
 // creating anything means Gatsby has no cached version of them left to clean up.
-// A site can source several boards, whose nodes share the node store and whose plugin instances share
-// the cache, so each board keeps the ids of its own parents in the cache under its board token.
-const deleteChangedParents = async (nodes, boardToken, { cache, getNode, deleteNode }) => {
-  const cacheKey = `parent-node-ids-${boardToken}`
+// The parents are found in the node store, which is what Gatsby cleans up, rather than in a list the
+// plugin would have to keep, which a node store from 2.0 would not have. A site can source several
+// boards, whose nodes share the node store, so only parents of this board's nodes are deleted.
+const deleteChangedParents = (nodes, { getNode, getNodesByType, deleteNode }) => {
   const digests = new Map(nodes.map(node => [node.id, node.internal.contentDigest]))
 
-  for (const id of (await cache.get(cacheKey)) || []) {
+  // whether Gatsby would delete one of this board's nodes along with the cached node, looking through
+  // the cached children the way Gatsby does
+  const hasChildOfThisBoard = node => {
+    const queue = [...node.children]
+    const seen = new Set()
+    while (queue.length) {
+      const id = queue.pop()
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (digests.has(id)) return true
+      const child = getNode(id)
+      if (child) queue.push(...child.children)
+    }
+    return false
+  }
+
+  const changedParents = [`GreenhouseOffice`, `GreenhouseDepartment`]
+    .flatMap(type => getNodesByType(type))
+    .filter(node => digests.get(node.id) !== node.internal.contentDigest && hasChildOfThisBoard(node))
+
+  for (const { id } of changedParents) {
     // deleting a node also deletes its children, so check the node is still there
     const cachedNode = getNode(id)
-    if (cachedNode && digests.get(id) !== cachedNode.internal.contentDigest) {
+    if (cachedNode) {
       deleteNode(cachedNode)
     }
   }
-
-  // saved before creating the nodes, so that the cache lists every parent of this board that the
-  // node store may hold, even if the build stops part way
-  await cache.set(cacheKey, nodes.filter(node => node.children.length > 0).map(node => node.id))
 }
 
-exports.sourceNodes = async ({ actions, cache, createNodeId, createContentDigest, getNode, reporter }, pluginOptions) => {
+exports.sourceNodes = async ({ actions, createNodeId, createContentDigest, getNode, getNodesByType, reporter }, pluginOptions) => {
   const { createNode, deleteNode } = actions
   const { boardToken, requestsPerMinute, timeout } = pluginOptions
   // an option the site did not set is undefined, which keeps the default
@@ -138,7 +154,7 @@ exports.sourceNodes = async ({ actions, cache, createNodeId, createContentDigest
 
   nodes = addContentDigests(nodes, createContentDigest)
 
-  await deleteChangedParents(nodes, boardToken, { cache, getNode, deleteNode })
+  deleteChangedParents(nodes, { getNode, getNodesByType, deleteNode })
 
   // Create the nodes with Gatsby
   await Promise.all(

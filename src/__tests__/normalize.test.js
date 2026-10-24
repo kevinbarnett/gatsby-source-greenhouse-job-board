@@ -90,6 +90,7 @@ describe('linkForeignReferences', () => {
       { id: 11, departments: [] },
       { id: 12, departments: [{ id: 2, jobs: [] }, { id: 0, name: 'No Department', jobs: [] }] },
       { id: 13, departments: [{ id: 0, name: 'No Department', jobs: [{ id: 102 }] }] },
+      { id: 14, departments: [{ id: 404, jobs: [] }] },
     ]),
     departments: filterResponseForIds([
       { id: 1, jobs: [{ id: 100 }, { id: 101 }, { id: 404 }] },
@@ -102,6 +103,7 @@ describe('linkForeignReferences', () => {
       { id: 101, departments: [{ id: 1 }, { id: 2 }], offices: [{ id: 10 }] },
       { id: 102, departments: [], offices: [{ id: 10 }, { id: 13 }] },
       { id: 103, departments: [{ id: 404 }], offices: [{ id: 404 }] },
+      { id: 104, departments: [{ id: 0, name: 'No Department' }], offices: [{ id: 0, name: 'No Office' }] },
     ],
   })
 
@@ -128,11 +130,19 @@ describe('linkForeignReferences', () => {
     assert.equal('departments___NODE' in byId(nodes, 'GreenhouseJob-102'), false)
   })
 
-  test('leave out links that only list nodes that do not exist, the same as links to empty lists', () => {
+  test('link to an empty list when nothing Greenhouse lists has a node, as 2.0 did', () => {
     const nodes = buildNodes(response())
-    assert.equal('jobs___NODE' in byId(nodes, 'GreenhouseDepartment-3'), false)
-    assert.equal('departments___NODE' in byId(nodes, 'GreenhouseJob-103'), false)
-    assert.equal('offices___NODE' in byId(nodes, 'GreenhouseJob-103'), false)
+    assert.deepEqual(byId(nodes, 'GreenhouseDepartment-3').jobs___NODE, [])
+    assert.deepEqual(byId(nodes, 'GreenhouseJob-103').departments___NODE, [])
+    assert.deepEqual(byId(nodes, 'GreenhouseJob-103').offices___NODE, [])
+    assert.deepEqual(byId(nodes, 'GreenhouseOffice-14').departments___NODE, [])
+    assert.deepEqual(byId(nodes, 'GreenhouseOffice-14').jobs___NODE, [])
+  })
+
+  test('leave out links for "No Office" and "No Department", the same as for empty lists', () => {
+    const job = byId(buildNodes(response()), 'GreenhouseJob-104')
+    assert.equal('departments___NODE' in job, false)
+    assert.equal('offices___NODE' in job, false)
   })
 
   test('link an office with departments to a list of jobs, even an empty one, as 2.0 did', () => {

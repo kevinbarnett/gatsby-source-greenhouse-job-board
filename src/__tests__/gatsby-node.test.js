@@ -39,20 +39,18 @@ const mockBoards = (t, boards) => {
 const mockBoard = (t, board) => mockBoards(t, { acme: board })
 
 // The parts of Gatsby that sourceNodes uses. A later build passes the fake of the build before it,
-// to keep its node store and cache.
-const fakeGatsby = ({ store = new Map(), cache = new Map() } = {}) => {
+// to keep its node store.
+const fakeGatsby = ({ store = new Map() } = {}) => {
   const calls = []
   const logs = { info: [], warn: [], panic: [] }
+  // the nodes created in this build
+  const created = new Set()
   // like Gatsby, which adds the message of an error passed along to the message it logs
   const log = level => (message, error) =>
     logs[level].push(stripVTControlCharacters(error ? `${message} ${error.message}` : message))
 
-  const deleteNode = node => {
-    // like Gatsby, which cannot delete a node that is gone
-    assert.ok(store.has(node.id), `deleteNode called for ${node.id}, which does not exist`)
-    calls.push(['deleteNode', node.id])
-    store.delete(node.id)
-    // like Gatsby, which deletes the children of a node along with it
+  // like Gatsby, which deletes the children of a node along with it, and their children
+  const deleteChildren = node => {
     for (const childId of node.children) {
       if (store.has(childId)) {
         deleteNode(store.get(childId))
@@ -60,27 +58,51 @@ const fakeGatsby = ({ store = new Map(), cache = new Map() } = {}) => {
     }
   }
 
+  const deleteNode = node => {
+    // like Gatsby, which cannot delete a node that is gone
+    assert.ok(store.has(node.id), `deleteNode called for ${node.id}, which does not exist`)
+    const storedNode = store.get(node.id)
+    calls.push(['deleteNode', node.id])
+    store.delete(node.id)
+    deleteChildren(storedNode)
+  }
+
   return {
     store,
-    cache,
     calls,
     logs,
+    // like Gatsby, which deletes the nodes that were not created in a build once every plugin has
+    // created its nodes, unless their parent was, looking up to the parent at the top
+    deleteStaleNodes: () => {
+      for (const node of [...store.values()]) {
+        let top = node
+        while (top.parent && store.has(top.parent)) {
+          top = store.get(top.parent)
+        }
+        if (store.has(node.id) && !created.has(top.id)) {
+          deleteNode(node)
+        }
+      }
+    },
     args: {
       actions: {
         createNode: node => {
           calls.push(['createNode', node.id])
+          // like Gatsby, which deletes the children of a cached node that changed, to have them
+          // created again
+          const cachedNode = store.get(node.id)
+          if (cachedNode && cachedNode.internal.contentDigest !== node.internal.contentDigest) {
+            deleteChildren(cachedNode)
+          }
           store.set(node.id, node)
+          created.add(node.id)
         },
         deleteNode,
-      },
-      // like Gatsby, which serializes what it caches
-      cache: {
-        get: async key => structuredClone(cache.get(key)),
-        set: async (key, value) => cache.set(key, structuredClone(value)),
       },
       createNodeId: key => key,
       createContentDigest: content => JSON.stringify(content),
       getNode: id => store.get(id),
+      getNodesByType: type => [...store.values()].filter(node => node.internal.type === type),
       reporter: { info: log('info'), warn: log('warn'), panic: log('panic') },
     },
   }
@@ -251,6 +273,7 @@ describe('sourceNodes', () => {
     })
     const rebuild = fakeGatsby(gatsby)
     await sourceNodes(rebuild.args, { boardToken: 'acme' })
+    rebuild.deleteStaleNodes()
 
     const firstCreate = rebuild.calls.findIndex(([action]) => action === 'createNode')
     assert.deepEqual(rebuild.calls.slice(0, firstCreate), [
@@ -266,6 +289,45 @@ describe('sourceNodes', () => {
       [...rebuild.store.keys()].sort(),
       cachedIds.filter(id => id !== 'GreenhouseDepartment-4').sort()
     )
+  })
+
+  test('delete changed parents that 2.0 created, which the plugin kept no record of', async t => {
+    const board = {
+      offices: [
+        // listed before its parent
+        { id: 11, parent_id: 10, child_ids: [], departments: [] },
+        { id: 10, parent_id: null, child_ids: [11], departments: [] },
+      ],
+      departments: [
+        { id: 2, parent_id: 1, child_ids: [3], jobs: [] },
+        { id: 3, parent_id: 2, child_ids: [], jobs: [] },
+        { id: 1, parent_id: null, child_ids: [2], jobs: [] },
+      ],
+    }
+    mockBoard(t, board)
+    const cleanBuild = fakeGatsby()
+    await sourceNodes(cleanBuild.args, { boardToken: 'acme' })
+
+    // 2.0 created the same nodes, but worked out their digests another way
+    const store = new Map([...cleanBuild.store].map(([id, node]) => [
+      id,
+      { ...node, internal: { ...node.internal, contentDigest: `2.0 ${node.internal.contentDigest}` } },
+    ]))
+    const rebuild = fakeGatsby({ store })
+    await sourceNodes(rebuild.args, { boardToken: 'acme' })
+    rebuild.deleteStaleNodes()
+
+    // every node is deleted before the first create, in whichever order the store lists them
+    const firstCreate = rebuild.calls.findIndex(([action]) => action === 'createNode')
+    assert.deepEqual(rebuild.calls.slice(0, firstCreate).sort(), [
+      ['deleteNode', 'GreenhouseDepartment-1'],
+      ['deleteNode', 'GreenhouseDepartment-2'],
+      ['deleteNode', 'GreenhouseDepartment-3'],
+      ['deleteNode', 'GreenhouseOffice-10'],
+      ['deleteNode', 'GreenhouseOffice-11'],
+    ])
+    assert.equal(rebuild.calls.slice(firstCreate).some(([action]) => action === 'deleteNode'), false)
+    assert.deepEqual(rebuild.store, cleanBuild.store)
   })
 
   test('leave the nodes of other boards alone, for a site that sources several boards', async t => {
@@ -284,10 +346,11 @@ describe('sourceNodes', () => {
       },
       globex,
     })
-    // like Gatsby, which runs each instance of the plugin in turn, with one node store and cache
+    // like Gatsby, which runs each instance of the plugin in turn, with one node store
     const gatsby = fakeGatsby()
     await sourceNodes(gatsby.args, { boardToken: 'acme' })
     await sourceNodes(gatsby.args, { boardToken: 'globex' })
+    gatsby.deleteStaleNodes()
 
     assert.equal(gatsby.calls.some(([action]) => action === 'deleteNode'), false)
     const cachedIds = [...gatsby.store.keys()]
@@ -307,6 +370,7 @@ describe('sourceNodes', () => {
     const rebuild = fakeGatsby(gatsby)
     await sourceNodes(rebuild.args, { boardToken: 'acme' })
     await sourceNodes(rebuild.args, { boardToken: 'globex' })
+    rebuild.deleteStaleNodes()
 
     assert.deepEqual(rebuild.calls.filter(([action]) => action === 'deleteNode'), [
       ['deleteNode', 'GreenhouseDepartment-1'],

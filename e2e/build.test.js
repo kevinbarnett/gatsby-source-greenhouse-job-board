@@ -299,49 +299,95 @@ test('a site can query offices, departments and jobs, and how they link up', asy
   })
 })
 
+test('a site gets an empty list for a link to offices, departments or jobs that have no node, as 2.0 did', async () => {
+  const routes = greenhouseRoutes({ offices, departments, jobs, missingJobs: [101] }, 'acme')
+  // Greenhouse sends each list on its own, so the lists can disagree, such as when an office or a
+  // department is removed while a build is fetching
+  const { body: officeList } = routes['/v1/boards/acme/offices/']
+  officeList.offices = officeList.offices.filter(office => office.id !== 11)
+  const { body: departmentList } = routes['/v1/boards/acme/departments/']
+  departmentList.departments = departmentList.departments.filter(department => department.id !== 2)
+
+  const { data } = await build({ routes, query: linksQuery })
+
+  assert.deepEqual(linksOf(data), {
+    offices: {
+      10: { name: 'Europe', parent: null, children: [], jobs: [102] },
+    },
+    departments: {
+      1: { name: 'Engineering', parent: null, children: [3], jobs: null },
+      // its only job closed after it was listed
+      3: { name: 'Backend', parent: 1, children: [], jobs: [] },
+      4: { name: 'Sales', parent: null, children: [5], jobs: null },
+      5: { name: 'Account Management', parent: 4, children: [], jobs: [102] },
+    },
+    jobs: {
+      // Berlin and Frontend have no node
+      100: { title: 'Frontend Engineer', departments: [], offices: [] },
+      102: { title: 'Account Manager', departments: [5], offices: [10] },
+      103: { title: 'Office Manager', departments: null, offices: [] },
+    },
+  })
+})
+
+// The board of a rebuild, changed in every way that makes Gatsby delete cached nodes, and what the
+// site sees of it
+const changedBoard = {
+  offices: [
+    // listed before its parent, which is renamed
+    offices[0],
+    { ...offices[1], name: 'EMEA' },
+  ],
+  departments: [
+    // listed before its parent, which is renamed and gets a child
+    departments[0],
+    { ...departments[1], name: 'Product Engineering', children: [2, 3, 5] },
+    departments[2],
+    // moved from Sales, which is gone
+    { ...departments[3], parent: 1 },
+  ],
+  jobs,
+  // closed after it was listed, so Backend and EMEA still list it
+  missingJobs: [101],
+}
+
+const changedLinks = {
+  offices: {
+    10: { name: 'EMEA', parent: null, children: [11], jobs: [102] },
+    11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
+  },
+  departments: {
+    1: { name: 'Product Engineering', parent: null, children: [2, 3, 5], jobs: null },
+    2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
+    3: { name: 'Backend', parent: 1, children: [], jobs: [] },
+    5: { name: 'Account Management', parent: 1, children: [], jobs: [102] },
+  },
+  jobs: {
+    100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
+    102: { title: 'Account Manager', departments: [5], offices: [10] },
+    103: { title: 'Office Manager', departments: null, offices: [11] },
+  },
+}
+
 test('a rebuild from the cache keeps offices and departments that changed, moved or lost a job', async () => {
   await build({ board: { offices, departments, jobs }, query: linksQuery })
 
-  const { data, output } = await build({
-    board: {
-      offices: [
-        offices[0],
-        { ...offices[1], name: 'EMEA' },
-      ],
-      departments: [
-        departments[0],
-        { ...departments[1], name: 'Product Engineering', children: [2, 3, 5] },
-        departments[2],
-        // moved from Sales, which is gone
-        { ...departments[3], parent: 1 },
-      ],
-      jobs,
-      // closed after it was listed, so Backend and EMEA still list it
-      missingJobs: [101],
-    },
-    query: linksQuery,
-    clean: false,
-  })
+  const { data, output } = await build({ board: changedBoard, query: linksQuery, clean: false })
 
   assert.doesNotMatch(output, /deleting your site's\s+cache/, 'Gatsby did not use the cache')
   assert.match(output, /Skipping job 101 \(Backend Engineer\), since Greenhouse no longer has its details/)
-  assert.deepEqual(linksOf(data), {
-    offices: {
-      10: { name: 'EMEA', parent: null, children: [11], jobs: [102] },
-      11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
-    },
-    departments: {
-      1: { name: 'Product Engineering', parent: null, children: [2, 3, 5], jobs: null },
-      2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
-      3: { name: 'Backend', parent: 1, children: [], jobs: null },
-      5: { name: 'Account Management', parent: 1, children: [], jobs: [102] },
-    },
-    jobs: {
-      100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
-      102: { title: 'Account Manager', departments: [5], offices: [10] },
-      103: { title: 'Office Manager', departments: null, offices: [11] },
-    },
-  })
+  assert.deepEqual(linksOf(data), changedLinks)
+})
+
+test('a rebuild keeps them too when Gatsby keeps the nodes but not what plugins cached, as 2.0 cached nothing', async () => {
+  await build({ board: { offices, departments, jobs }, query: linksQuery })
+  // where Gatsby keeps what plugins cache, apart from the nodes in .cache/data
+  fs.rmSync(path.join(siteDir, '.cache', 'caches-lmdb'), { recursive: true, force: true })
+
+  const { data, output } = await build({ board: changedBoard, query: linksQuery, clean: false })
+
+  assert.doesNotMatch(output, /deleting your site's\s+cache/, 'Gatsby did not use the cache')
+  assert.deepEqual(linksOf(data), changedLinks)
 })
 
 test('a site can source several boards, and a rebuild that changes one board keeps the others', async () => {
