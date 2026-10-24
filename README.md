@@ -340,3 +340,7 @@ npm run test:e2e
 
 `npm test` runs the unit tests in `src/__tests__`.
 `npm run test:e2e` packs the plugin the way npm publishes it, and builds the Gatsby site in `e2e/site` with it, against a mock of the Greenhouse API.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

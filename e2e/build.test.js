@@ -278,6 +278,7 @@ const boardLinks = {
 
 test('the package contains only the plugin', () => {
   assert.deepEqual(fs.readdirSync(pluginDir, { recursive: true }).sort(), [
+    'LICENSE',
     'README.md',
     'fetch.js',
     'gatsby-node.js',
