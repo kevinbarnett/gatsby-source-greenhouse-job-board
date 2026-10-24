@@ -106,10 +106,10 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
   return routes
 }
 
-// Runs `gatsby build` for the site, with `boardToken` in its config and `routes` as the responses of
-// the Greenhouse API, and returns Gatsby's exit code, what it printed, and the result of running
-// `query` while the site creates its pages, if the build got that far
-const gatsbyBuild = async ({ routes, boardToken = 'acme', query, clean }) => {
+// Runs `gatsby build` for the site, with `boardToken` and `options` as the plugin's options and
+// `routes` as the responses of the Greenhouse API, and returns Gatsby's exit code, what it printed,
+// and the result of running `query` while the site creates its pages, if the build got that far
+const gatsbyBuild = async ({ routes, boardToken = 'acme', options, query, clean }) => {
   if (clean) {
     for (const dir of ['.cache', 'public']) {
       fs.rmSync(path.join(siteDir, dir), { recursive: true, force: true })
@@ -129,7 +129,7 @@ const gatsbyBuild = async ({ routes, boardToken = 'acme', query, clean }) => {
       NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require ${JSON.stringify(path.join(__dirname, 'mock-greenhouse.js'))}`]
         .filter(Boolean)
         .join(' '),
-      E2E_BOARD_TOKEN: JSON.stringify(boardToken),
+      E2E_PLUGIN_OPTIONS: JSON.stringify({ boardToken, ...options }),
       GREENHOUSE_MOCK: mockFile,
       E2E_QUERY: query,
       E2E_RESULT: resultFile,
@@ -146,8 +146,10 @@ const gatsbyBuild = async ({ routes, boardToken = 'acme', query, clean }) => {
 
 // Builds the site, serving `board` as the Greenhouse API, and returns the result of running `query`
 // while the site creates its pages, along with what Gatsby printed
-const build = async ({ board, boardToken = 'acme', query, clean = true }) => {
-  const { code, output, result } = await gatsbyBuild({ routes: greenhouseRoutes(board, boardToken), boardToken, query, clean })
+const build = async ({ board, boardToken = 'acme', options, query, clean = true }) => {
+  const { code, output, result } = await gatsbyBuild({
+    routes: greenhouseRoutes(board, boardToken), boardToken, options, query, clean,
+  })
   assert.equal(code, 0, `gatsby build failed:\n${output}`)
   const { data, errors } = result
   assert.equal(errors, undefined, `the query failed:\n${JSON.stringify(errors, null, 2)}`)
@@ -392,4 +394,31 @@ test('a build with an unknown board token fails, and says once which request fai
     'error gatsby-source-greenhouse-job-board: Failed to fetch offices from Greenhouse API: ' +
       'Request to https://boards-api.greenhouse.io/v1/boards/acme/offices/ failed with HTTP status 404',
   ], output)
+})
+
+test('a site can set how many requests to send in any minute', async () => {
+  const { data, output } = await build({
+    board: { offices, departments, jobs },
+    options: { requestsPerMinute: 500 },
+    query: '{ allGreenhouseJob { nodes { gh_Id } } }',
+  })
+
+  assert.doesNotMatch(output, /Invalid plugin options|unknown plugin options/)
+  assert.deepEqual(ids(data.allGreenhouseJob.nodes), [100, 101, 102, 103])
+})
+
+test('a build with requests per minute below 1 fails before sending any request, and says why', async () => {
+  const { code, output, result } = await gatsbyBuild({
+    // no responses, so any request would fail with a different error
+    routes: {},
+    options: { requestsPerMinute: 0 },
+    query: '{ site { id } }',
+    clean: true,
+  })
+
+  assert.notEqual(code, 0)
+  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.match(output, /Invalid plugin options for "gatsby-source-greenhouse-job-board"/)
+  assert.match(output, /"requestsPerMinute" must be greater than or equal to 1/)
+  assert.doesNotMatch(output, /Failed to fetch/)
 })

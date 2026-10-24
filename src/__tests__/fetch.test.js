@@ -2,6 +2,7 @@ const { describe, test, beforeEach } = require('node:test')
 const assert = require('node:assert/strict')
 
 const { fetchJobs, fetchOffices, fetchDepartments } = require('../fetch')
+const { loadWithMockClock, run } = require('./mock-clock')
 
 const baseUrl = 'https://boards-api.greenhouse.io/v1/boards'
 
@@ -120,7 +121,13 @@ describe('timeouts', () => {
     mockFetch(t, {
       [`${baseUrl}/acme/offices/`]: [
         ({ signal }) => new Promise((resolve, reject) => {
-          signal.addEventListener('abort', () => reject(signal.reason))
+          // Keep Node running, like the open connection of a real request would. The timer of
+          // AbortSignal.timeout() does not, so Node 22 would otherwise end the test early.
+          const connection = setInterval(() => {}, 1000)
+          signal.addEventListener('abort', () => {
+            clearInterval(connection)
+            reject(signal.reason)
+          })
         }),
       ],
     })
@@ -213,5 +220,74 @@ describe('fetchJobs', () => {
     const jobs = await fetchJobs('acme', fast)
     assert.deepEqual(jobs.map(job => job.id), stats.ids)
     assert.equal(stats.mostRunning, 100)
+  })
+})
+
+describe('requests per minute', () => {
+  const jobsUrl = `${baseUrl}/acme/jobs/`
+
+  // Replaces fetch with one that answers with `respond(url)`, and returns when each request was sent
+  const mockFetchTimes = (t, respond) => {
+    const times = []
+    t.mock.method(globalThis, 'fetch', async url => {
+      times.push(Date.now())
+      return respond(url)
+    })
+    return times
+  }
+
+  // Answers like a board with `count` jobs
+  const board = count => url => url === jobsUrl
+    ? json({ jobs: Array.from({ length: count }, (_, i) => ({ id: i + 1 })) })
+    : json({ id: Number(url.slice(jobsUrl.length, url.indexOf('?'))) })
+
+  test('send at most `requestsPerMinute` requests in any minute, and wait to send the rest', async t => {
+    const { fetchJobs } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, board(7))
+    const jobs = await run(t, fetchJobs('acme', { ...fast, requestsPerMinute: 3 }))
+    assert.deepEqual(jobs.map(job => job.id), [1, 2, 3, 4, 5, 6, 7])
+    // the job listing, then the details of each job
+    assert.deepEqual(times, [0, 0, 0, 60000, 60000, 60000, 120000, 120000])
+  })
+
+  test('free up the slot of each request one minute after it was sent', async t => {
+    const { fetchOffices } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, () => json({}))
+    const options = { ...fast, requestsPerMinute: 2 }
+    await run(t, fetchOffices('acme', options))
+    t.mock.timers.tick(30000)
+    await run(t, Promise.all([1, 2, 3].map(() => fetchOffices('acme', options))))
+    assert.deepEqual(times, [0, 30000, 60000, 90000])
+  })
+
+  test('count the requests for every board together, since Greenhouse counts them per IP address', async t => {
+    const { fetchOffices, fetchDepartments } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, () => json({}))
+    const options = { ...fast, requestsPerMinute: 1 }
+    await run(t, Promise.all([fetchOffices('acme', options), fetchDepartments('other', options)]))
+    assert.deepEqual(times, [0, 60000])
+  })
+
+  test('count retries too', async t => {
+    const { fetchOffices } = loadWithMockClock(t, '../fetch')
+    const responses = [json({}, { status: 503 }), json({ offices: [{ id: 1 }] })]
+    const times = mockFetchTimes(t, () => responses.shift())
+    assert.deepEqual(await run(t, fetchOffices('acme', { ...fast, requestsPerMinute: 1 })), [{ id: 1 }])
+    assert.deepEqual(times, [0, 60000])
+  })
+
+  test('send up to 2,000 requests a minute by default, well below what Greenhouse blocks', async t => {
+    const { fetchJobs } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, board(2100))
+    const jobs = await run(t, fetchJobs('acme', fast))
+    assert.equal(jobs.length, 2100)
+    assert.deepEqual(times, [...Array(2000).fill(0), ...Array(101).fill(60000)])
+  })
+
+  test('keep the default when `requestsPerMinute` is given as undefined', async t => {
+    const { fetchJobs } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, board(2000))
+    await run(t, fetchJobs('acme', { ...fast, requestsPerMinute: undefined }))
+    assert.deepEqual(times, [...Array(2000).fill(0), 60000])
   })
 })

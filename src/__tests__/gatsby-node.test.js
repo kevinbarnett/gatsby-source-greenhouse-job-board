@@ -5,11 +5,12 @@ const { testPluginOptionsSchema } = require('gatsby-plugin-utils')
 
 const { pluginOptionsSchema, createSchemaCustomization, sourceNodes } = require('../gatsby-node')
 const { typeDefs } = require('../schema')
+const { loadWithMockClock, run } = require('./mock-clock')
 
 const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme'
 
-// Serves a board from the Greenhouse API. Jobs listed in `missingJobs` are in the job listing,
-// but their details are gone.
+// Serves a board from the Greenhouse API, and returns when each request was sent. Jobs listed in
+// `missingJobs` are in the job listing, but their details are gone.
 const mockBoard = (t, { offices = [], departments = [], jobs = [], missingJobs = [] }) => {
   const routes = {
     [`${boardUrl}/offices/`]: { offices },
@@ -19,10 +20,13 @@ const mockBoard = (t, { offices = [], departments = [], jobs = [], missingJobs =
   for (const job of jobs) {
     routes[`${boardUrl}/jobs/${job.id}?questions=true`] = missingJobs.includes(job.id) ? 404 : job
   }
+  const times = []
   t.mock.method(globalThis, 'fetch', async url => {
+    times.push(Date.now())
     const route = routes[url]
     return typeof route === 'number' ? new Response('', { status: route }) : Response.json(route)
   })
+  return times
 }
 
 // The parts of Gatsby that sourceNodes uses, with a node store that can be kept between builds
@@ -95,6 +99,29 @@ describe('pluginOptionsSchema', () => {
     const result = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: 'acme', other: true })
     assert.equal(result.isValid, true)
     assert.equal(result.hasWarnings, true)
+  })
+
+  test('accept a whole number of requests per minute, of at least 1', async () => {
+    for (const requestsPerMinute of [1, 500, 5000]) {
+      const result = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: 'acme', requestsPerMinute })
+      assert.equal(result.isValid, true, `${requestsPerMinute}: ${result.errors}`)
+      assert.equal(result.hasWarnings, false)
+    }
+
+    const errors = {}
+    for (const requestsPerMinute of [0, -5, 1.5, 'fast', null, Infinity]) {
+      const result = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: 'acme', requestsPerMinute })
+      errors[requestsPerMinute] = result.errors
+    }
+    assert.deepEqual(errors, {
+      // 0 would let requests go out without being counted
+      0: ['"requestsPerMinute" must be greater than or equal to 1'],
+      [-5]: ['"requestsPerMinute" must be greater than or equal to 1'],
+      1.5: ['"requestsPerMinute" must be an integer'],
+      fast: ['"requestsPerMinute" must be a number'],
+      null: ['"requestsPerMinute" must be a number'],
+      Infinity: ['"requestsPerMinute" cannot be infinity'],
+    })
   })
 })
 
@@ -185,6 +212,31 @@ describe('sourceNodes', () => {
     assert.deepEqual(gatsby.logs.warn, [
       'gatsby-source-greenhouse-job-board: Skipping job 101 (Job 101), since Greenhouse no longer has its details',
     ])
+  })
+
+  test('send at most `requestsPerMinute` requests in any minute, for offices, departments and jobs', async t => {
+    const { sourceNodes } = loadWithMockClock(t, '../gatsby-node')
+    const times = mockBoard(t, { jobs: [job(100)] })
+    const options = { boardToken: 'acme', requestsPerMinute: 1 }
+    // like a site that sources two boards, whose requests count together, so that the offices of
+    // the second board have to wait too
+    const gatsby = fakeGatsby()
+    await run(t, sourceNodes(gatsby.args, options))
+    await run(t, sourceNodes(fakeGatsby().args, options))
+
+    // offices, departments, the job listing and job 100, twice, each a minute after the one before
+    assert.deepEqual(times, [0, 1, 2, 3, 4, 5, 6, 7].map(minutes => minutes * 60000))
+    assert.deepEqual([...gatsby.store.keys()], ['GreenhouseJob-100'])
+  })
+
+  test('send up to 2,000 requests a minute when the site does not set `requestsPerMinute`', async t => {
+    const { sourceNodes } = loadWithMockClock(t, '../gatsby-node')
+    const times = mockBoard(t, { jobs: Array.from({ length: 1998 }, (_, i) => job(i + 1)) })
+    const gatsby = fakeGatsby()
+    await run(t, sourceNodes(gatsby.args, { boardToken: 'acme' }))
+
+    assert.deepEqual(times, [...Array(2000).fill(0), 60000])
+    assert.equal(gatsby.store.size, 1998)
   })
 
   test('panic when the board cannot be fetched, and create nothing', async t => {

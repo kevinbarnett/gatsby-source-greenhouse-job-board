@@ -34,19 +34,25 @@ To use this source you need to provide a Greenhouse Job Board token. You can fin
 
 Next, edit `gatsby-config.js` to use the plugin:
 
-```
-{
-  ...
+```js
+module.exports = {
   plugins: [
-    ...
     {
       resolve: 'gatsby-source-greenhouse-job-board',
       options: {
-        boardToken: '{board token}'
+        boardToken: '{board token}',
       },
-  ]
+    },
+  ],
 }
 ```
+
+### Options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `boardToken` | Yes | Your Greenhouse Job Board token. |
+| `requestsPerMinute` | No | The most requests to send to Greenhouse in any minute, counting every board in the build. A whole number of at least 1. Defaults to `2000`. See [Request limits](#request-limits). |
 
 ## How to query
 
@@ -61,8 +67,8 @@ GraphQL model.
   allGreenhouseJob {
     edges {
       node {
-      title
-      absolute_url
+        title
+        absolute_url
         location {
           name
         }
@@ -89,11 +95,11 @@ types and properties available.
 
 ### Query jobs
 
-Jobs are linked to their `departments` and `offices`, which following the format of the API, returns an array. 
+Jobs are linked to their `departments` and `offices`, which are lists, following the format of the API.
 
 ```graphql
 {
-allGreenhouseJob {
+  allGreenhouseJob {
     edges {
       node {
         id
@@ -110,7 +116,7 @@ allGreenhouseJob {
             name
             type
           }
-    	  }
+        }
         location {
           name
         }
@@ -132,7 +138,7 @@ Decode it and run it through an HTML sanitizer before rendering it with `dangero
 
 ### Query departments
 
-Department data links to `jobs` from which all data mentioned in the previous example can be queried. Departments can also also have parent/child relationships which are linked when available.
+Department data links to `jobs` from which all data mentioned in the previous example can be queried. Departments can also have parent/child relationships which are linked when available.
 
 ```graphql
 {
@@ -163,7 +169,7 @@ Department data links to `jobs` from which all data mentioned in the previous ex
 
 ### Query offices
 
-Office data links to both `departments` and `jobs` from which all data mentioned in the previous examples can be queried. Offices can also also have parent/child relationships which are linked when available.
+Office data links to both `departments` and `jobs` from which all data mentioned in the previous examples can be queried. Offices can also have parent/child relationships which are linked when available.
 
 ```graphql
 {
@@ -200,6 +206,29 @@ Greenhouse provides two APIs for sourcing information on open jobs, `Harvest` an
 -   Harvest API provides a significant amount of data which some individuals and/or organizations may consider to be sensitive
 
 More information on the Job Board API can be found on the [Greenhouse Developer Website](https://developers.greenhouse.io/job-board.html).
+
+## Request limits
+
+The plugin sends one request for each job, plus three for each board.
+Greenhouse blocks an IP address for about a minute once it gets a few thousand requests from it within a minute, and the build then fails with HTTP status 403.
+To stay well below that, the plugin sends at most 2,000 requests a minute by default, counting every board in the build.
+A build that fetches more than about 2,000 jobs then takes about a minute longer for every further 2,000 jobs, instead of failing.
+The plugin retries timeouts, network errors, HTTP status 429 and server errors up to 3 times, but not 403, since a block lasts longer than the retries would wait.
+The plugin can only count the requests of its own build, so builds that run at the same time from one IP address, for example on shared CI runners, can still get blocked.
+If a build fails with HTTP status 403, wait a minute and build again.
+
+To change the limit, set the `requestsPerMinute` option to a whole number of at least 1:
+
+```js
+options: {
+  boardToken: '{board token}',
+  requestsPerMinute: 1000,
+},
+```
+
+Lower it if builds often fail with HTTP status 403, for example because other builds send requests from the same IP address at the same time.
+Raising it makes builds with thousands of jobs faster, but makes a block more likely.
+If a site sources several boards, give each the same limit, since the plugin counts their requests together.
 
 ## Migration Guide: v1 to v2
 

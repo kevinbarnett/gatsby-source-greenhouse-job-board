@@ -23,6 +23,14 @@ exports.pluginOptionsSchema = ({ Joi }) => {
       .try(Joi.string(), Joi.number())
       .required()
       .description(`Your Greenhouse job board token, listed under Configure > Dev Center > Configure Job Board`),
+    // optional, since fetch.js has the default
+    requestsPerMinute: Joi.number()
+      .integer()
+      .min(1)
+      .description(
+        `The most requests to send to Greenhouse in any minute, counting every board in the build. ` +
+        `Defaults to 2000. Greenhouse blocks an IP address for about a minute once it sends a few thousand.`
+      ),
   })
 }
 
@@ -51,7 +59,9 @@ const deleteChangedParents = (nodes, { getNode, getNodesByType, deleteNode }) =>
 
 exports.sourceNodes = async ({ actions, createNodeId, createContentDigest, getNode, getNodesByType, reporter }, pluginOptions) => {
   const { createNode, deleteNode } = actions
-  const { boardToken } = pluginOptions
+  const { boardToken, requestsPerMinute } = pluginOptions
+  // an option the site did not set is undefined, which keeps the default
+  const fetchOptions = { requestsPerMinute }
 
   let offices, departments, jobs
   let nodes
@@ -59,9 +69,10 @@ exports.sourceNodes = async ({ actions, createNodeId, createContentDigest, getNo
   try {
     // Fetch data from the Greenhouse APIs
     reporter.info(chalk.blue('Fetching data from Greenhouse API...'))
-    offices = await fetchOffices(boardToken)
-    departments = await fetchDepartments(boardToken)
+    offices = await fetchOffices(boardToken, fetchOptions)
+    departments = await fetchDepartments(boardToken, fetchOptions)
     jobs = await fetchJobs(boardToken, {
+      ...fetchOptions,
       onMissingJob: job => reporter.warn(
         `gatsby-source-greenhouse-job-board: Skipping job ${job.id} (${job.title}), since Greenhouse no longer has its details`
       ),

@@ -12,6 +12,24 @@ const defaultOptions = {
   // Job details are one request per job, so limit how many run at once. With 100, boards with
   // about 900 jobs download as fast as with every request at once, like earlier versions did.
   concurrency: 100,
+  // Greenhouse's firewall blocks an IP address for about a minute once that address sends a few
+  // thousand requests in a minute. When measured, 3,244 in a minute got through, and the block began at
+  // about 7,200. So never send more than this many in any minute, with room to spare. Only builds
+  // that fetch more than about 2,000 jobs, across all their boards, ever wait. Sites can change it
+  // with the plugin option of the same name.
+  requestsPerMinute: 2000,
+}
+
+// Options given as undefined keep their defaults, so that options a site did not set can be
+// passed along as they are
+const withDefaults = options => {
+  const merged = { ...defaultOptions }
+  for (const [name, value] of Object.entries(options || {})) {
+    if (value !== undefined) {
+      merged[name] = value
+    }
+  }
+  return merged
 }
 
 class HTTPError extends Error {
@@ -23,6 +41,27 @@ class HTTPError extends Error {
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+const minute = 60000
+
+// When each request of the last minute was sent, oldest first. Every board in the build shares
+// it, since Greenhouse counts all requests from the same IP address.
+const sentInLastMinute = []
+
+// Counts a request about to be sent and returns 0 if that keeps the requests of the last minute
+// within `limit`. Otherwise counts nothing and returns how many milliseconds to wait first.
+function reserveRequest(limit) {
+  // performance.now() only moves forward, unlike the system clock
+  const now = performance.now()
+  while (sentInLastMinute.length > 0 && sentInLastMinute[0] <= now - minute) {
+    sentInLastMinute.shift()
+  }
+  if (sentInLastMinute.length < limit) {
+    sentInLastMinute.push(now)
+    return 0
+  }
+  return sentInLastMinute[0] + minute - now
+}
 
 const isRetryableStatus = status => status === 429 || status >= 500
 
@@ -51,11 +90,18 @@ const describeFailure = (error, timeout) => {
 
 // Helper function to handle fetch requests with timeouts, retries and proper error handling
 async function fetchJSON(url, options) {
-  const { timeout, retries, retryDelay, maxRetryDelay } = { ...defaultOptions, ...options }
+  const { timeout, retries, retryDelay, maxRetryDelay, requestsPerMinute } = withDefaults(options)
 
   for (let attempt = 0; ; attempt++) {
     const backoff = retryDelay * 2 ** attempt
     let response
+
+    // Retries count too, since the firewall sees every request. The request is sent right after
+    // it is counted, with nothing in between that could make it later. The timeout starts then.
+    let wait
+    while ((wait = reserveRequest(requestsPerMinute)) > 0) {
+      await sleep(wait)
+    }
 
     try {
       response = await fetch(url, { signal: AbortSignal.timeout(timeout) })
@@ -109,7 +155,7 @@ async function mapWithConcurrency(items, limit, fn) {
 const boardUrl = boardToken => `${baseUrl}/${encodeURIComponent(boardToken)}`
 
 async function fetchJobs(boardToken, { onMissingJob, ...options } = {}) {
-  const { concurrency } = { ...defaultOptions, ...options }
+  const { concurrency } = withDefaults(options)
   const url = `${boardUrl(boardToken)}/jobs/`
 
   let jobs
