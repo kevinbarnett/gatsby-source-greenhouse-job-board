@@ -34,6 +34,15 @@ exports.pluginOptionsSchema = ({ Joi }) => {
         `The most requests to send to Greenhouse in any minute, counting every board in the build. ` +
         `Defaults to 2000. Greenhouse blocks an IP address for about a minute once it sends a few thousand.`
       ),
+    timeout: Joi.number()
+      .integer()
+      .min(1)
+      // the longest timer Node.js has. It would time out after 1ms instead of waiting any longer.
+      .max(2147483647)
+      .description(
+        `How many milliseconds to wait for each request to Greenhouse before trying it again. ` +
+        `Defaults to 90000. Greenhouse can take about a minute to send the offices list of a big board.`
+      ),
   })
 }
 
@@ -66,9 +75,9 @@ const deleteChangedParents = async (nodes, boardToken, { cache, getNode, deleteN
 
 exports.sourceNodes = async ({ actions, cache, createNodeId, createContentDigest, getNode, reporter }, pluginOptions) => {
   const { createNode, deleteNode } = actions
-  const { boardToken, requestsPerMinute } = pluginOptions
+  const { boardToken, requestsPerMinute, timeout } = pluginOptions
   // an option the site did not set is undefined, which keeps the default
-  const fetchOptions = { requestsPerMinute }
+  const fetchOptions = { requestsPerMinute, timeout }
 
   let offices, departments, jobs
   let nodes

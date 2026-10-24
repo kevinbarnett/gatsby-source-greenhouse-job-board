@@ -53,6 +53,7 @@ module.exports = {
 | --- | --- | --- |
 | `boardToken` | Yes | Your Greenhouse Job Board token. |
 | `requestsPerMinute` | No | The most requests to send to Greenhouse in any minute, counting every board in the build. A whole number of at least 1. Defaults to `2000`. See [Request limits](#request-limits). |
+| `timeout` | No | How many milliseconds to wait for each request to Greenhouse before trying it again. A whole number from 1 to 2147483647. Defaults to `90000`, which is 90 seconds. See [Timeouts](#timeouts). |
 
 ## How to query
 
@@ -236,6 +237,21 @@ options: {
 Lower it if builds often fail with HTTP status 403, for example because other builds send requests from the same IP address at the same time.
 Raising it makes builds with thousands of jobs faster, but makes a block more likely.
 If a site sources several boards, give each the same limit, since the plugin counts their requests together.
+
+## Timeouts
+
+Greenhouse can take about a minute to send the offices list of a big board when it has not sent that list for a while.
+So the plugin waits up to 90 seconds for each request before it tries the request again.
+It tries each request up to 4 times, so with the default timeout, a request that Greenhouse never answers fails the build after about 6 minutes.
+
+If a build fails because a request "timed out", set the `timeout` option to a longer time, in milliseconds:
+
+```js
+options: {
+  boardToken: '{board token}',
+  timeout: 180000,
+},
+```
 
 ## Migration Guide: v1 to v2
 

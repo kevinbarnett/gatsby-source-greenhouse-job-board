@@ -193,8 +193,44 @@ describe('timeouts', () => {
       ],
     })
     await assert.rejects(fetchOffices('acme', { ...fast, timeout: 20, retries: 1 }), {
-      message: `Failed to fetch offices from Greenhouse API: Request to ${baseUrl}/acme/offices/ timed out after 20ms`,
+      message: `Failed to fetch offices from Greenhouse API: Request to ${baseUrl}/acme/offices/ timed out after 20ms. ` +
+        'Set the `timeout` plugin option to wait longer.',
     })
+  })
+
+  // Replaces fetch with one that answers each request after the next of `delays` milliseconds, unless
+  // the request is aborted first. Use with loadWithMockClock. AbortSignal.timeout() has a timer of
+  // its own, which t.mock.timers cannot mock, so it is replaced with one that uses the mocked clock.
+  const mockSlowFetch = (t, delays) => {
+    t.mock.method(AbortSignal, 'timeout', ms => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms)
+      return controller.signal
+    })
+    t.mock.method(globalThis, 'fetch', async (url, { signal }) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(json({ offices: [{ id: 1 }] })), delays.shift())
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(signal.reason)
+      })
+    }))
+  }
+
+  test('wait up to 90 seconds by default, since Greenhouse can take a minute to send the offices of a big board', async t => {
+    const { fetchOffices } = loadWithMockClock(t, '../fetch')
+    mockSlowFetch(t, [89000, 91000])
+    assert.deepEqual(await run(t, fetchOffices('acme', { retries: 0 })), [{ id: 1 }])
+    await assert.rejects(run(t, fetchOffices('acme', { retries: 0 })), {
+      message: `Failed to fetch offices from Greenhouse API: Request to ${baseUrl}/acme/offices/ timed out after 90000ms. ` +
+        'Set the `timeout` plugin option to wait longer.',
+    })
+  })
+
+  test('keep the default when `timeout` is given as undefined', async t => {
+    const { fetchOffices } = loadWithMockClock(t, '../fetch')
+    mockSlowFetch(t, [89000, 91000])
+    assert.deepEqual(await run(t, fetchOffices('acme', { retries: 0, timeout: undefined })), [{ id: 1 }])
+    await assert.rejects(run(t, fetchOffices('acme', { retries: 0, timeout: undefined })), /timed out after 90000ms/)
   })
 })
 

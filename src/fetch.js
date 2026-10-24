@@ -3,8 +3,11 @@ const { inspect } = require('node:util')
 const baseUrl = `https://boards-api.greenhouse.io/v1/boards`
 
 const defaultOptions = {
-  // Give up on a request that has not finished after this many milliseconds
-  timeout: 30000,
+  // Give up on a request that has not finished after this many milliseconds. Greenhouse can take
+  // about a minute to send the offices list of a big board when it has not sent it for a while:
+  // Anduril's, 48.5 MB, took between 46 and 62 seconds when measured. So wait half as long again.
+  // Sites can change it with the plugin option of the same name.
+  timeout: 90000,
   // Retry network errors, timeouts, rate limiting (429) and server errors (5xx)
   retries: 3,
   // Wait 1s, 2s, 4s, ... between retries, unless the API sends Retry-After
@@ -117,7 +120,7 @@ const getRetryAfter = response => {
 
 const describeFailure = (error, timeout) => {
   if (error.name === `TimeoutError`) {
-    return `timed out after ${timeout}ms`
+    return `timed out after ${timeout}ms. Set the \`timeout\` plugin option to wait longer.`
   }
   // fetch() reports network errors as "fetch failed" and puts the reason in `cause`
   const cause = error.cause && (error.cause.code || error.cause.message)

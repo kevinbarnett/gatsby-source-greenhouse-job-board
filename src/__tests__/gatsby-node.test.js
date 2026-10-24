@@ -158,6 +158,31 @@ describe('pluginOptionsSchema', () => {
       Infinity: ['"requestsPerMinute" cannot be infinity'],
     })
   })
+
+  test('accept a timeout of a whole number of milliseconds, from 1 to the longest timer Node.js has', async () => {
+    for (const timeout of [1, 90000, 2147483647]) {
+      const result = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: 'acme', timeout })
+      assert.equal(result.isValid, true, `${timeout}: ${result.errors}`)
+      assert.equal(result.hasWarnings, false)
+    }
+
+    const errors = {}
+    for (const timeout of [0, -5, 1.5, 'slow', null, Infinity, 2147483648]) {
+      const result = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: 'acme', timeout })
+      errors[timeout] = result.errors
+    }
+    assert.deepEqual(errors, {
+      // 0 would time out every request right away
+      0: ['"timeout" must be greater than or equal to 1'],
+      [-5]: ['"timeout" must be greater than or equal to 1'],
+      1.5: ['"timeout" must be an integer'],
+      slow: ['"timeout" must be a number'],
+      null: ['"timeout" must be a number'],
+      Infinity: ['"timeout" cannot be infinity'],
+      // Node.js would time out after 1ms instead
+      2147483648: ['"timeout" must be less than or equal to 2147483647'],
+    })
+  })
 })
 
 describe('createSchemaCustomization', () => {
@@ -325,6 +350,20 @@ describe('sourceNodes', () => {
 
     assert.deepEqual(times, [...Array(2000).fill(0), 60000])
     assert.equal(gatsby.store.size, 1998)
+  })
+
+  test('wait for each request as long as `timeout` says, and 90 seconds when the site does not set it', async t => {
+    mockBoard(t, { jobs: [job(100)] })
+    const timeouts = t.mock.method(AbortSignal, 'timeout')
+    const timeoutOfEachRequest = async options => {
+      timeouts.mock.resetCalls()
+      await sourceNodes(fakeGatsby().args, options)
+      return timeouts.mock.calls.map(call => call.arguments[0])
+    }
+
+    // offices, departments, the job listing and job 100
+    assert.deepEqual(await timeoutOfEachRequest({ boardToken: 'acme', timeout: 5000 }), [5000, 5000, 5000, 5000])
+    assert.deepEqual(await timeoutOfEachRequest({ boardToken: 'acme' }), [90000, 90000, 90000, 90000])
   })
 
   test('panic when the board cannot be fetched, and create nothing', async t => {

@@ -147,9 +147,14 @@ const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], query, 
 // Builds the site, serving `board` as the Greenhouse API, and returns the result of running `query`
 // while the site creates its pages, along with what Gatsby printed. A site that sources several
 // boards gives `boards` instead, as a list of `{ boardToken, board }`, and adds the plugin once for each.
-const build = async ({ board, boardToken = 'acme', boards = [{ boardToken, board }], options, query, clean = true }) => {
+// `routes` replaces the responses made from the boards, for a test that changes them.
+const build = async ({
+  board, boardToken = 'acme', boards = [{ boardToken, board }],
+  routes = Object.assign({}, ...boards.map(({ boardToken, board }) => greenhouseRoutes(board, boardToken))),
+  options, query, clean = true,
+}) => {
   const { code, output, result } = await gatsbyBuild({
-    routes: Object.assign({}, ...boards.map(({ boardToken, board }) => greenhouseRoutes(board, boardToken))),
+    routes,
     plugins: boards.map(({ boardToken }) => ({ boardToken, ...options })),
     query,
     clean,
@@ -506,11 +511,11 @@ test('a site can set how many requests to send in any minute', async () => {
   assert.deepEqual(ids(data.allGreenhouseJob.nodes), [100, 101, 102, 103])
 })
 
-test('a build with requests per minute below 1 fails before sending any request, and says why', async () => {
+test('a build with requests per minute or a timeout below 1 fails before sending any request, and says why', async () => {
   const { code, output, result } = await gatsbyBuild({
     // no responses, so any request would fail with a different error
     routes: {},
-    plugins: [{ boardToken: 'acme', requestsPerMinute: 0 }],
+    plugins: [{ boardToken: 'acme', requestsPerMinute: 0, timeout: 0 }],
     query: '{ site { id } }',
     clean: true,
   })
@@ -519,5 +524,45 @@ test('a build with requests per minute below 1 fails before sending any request,
   assert.equal(result, undefined, 'the build went on to create pages')
   assert.match(output, /Invalid plugin options for "gatsby-source-greenhouse-job-board"/)
   assert.match(output, /"requestsPerMinute" must be greater than or equal to 1/)
+  assert.match(output, /"timeout" must be greater than or equal to 1/)
   assert.doesNotMatch(output, /Failed to fetch/)
+})
+
+// The responses of the Greenhouse API for `board`, where the offices list takes `delay` milliseconds,
+// like Greenhouse does for a big board that it has not sent for a while
+const withSlowOffices = (board, delay) => {
+  const routes = greenhouseRoutes(board, 'acme')
+  routes['/v1/boards/acme/offices/'].delay = delay
+  return routes
+}
+
+test('a site can set how long to wait for each request, for a board that Greenhouse is slow to send', async () => {
+  const { data, output } = await build({
+    routes: withSlowOffices({ offices, departments, jobs }, 1000),
+    options: { timeout: 5000 },
+    query: '{ allGreenhouseOffice { nodes { gh_Id } } }',
+  })
+
+  assert.doesNotMatch(output, /Invalid plugin options|unknown plugin options|timed out/)
+  assert.deepEqual(ids(data.allGreenhouseOffice.nodes), [10, 11])
+})
+
+test('a build fails when Greenhouse takes longer than the timeout, and says which option to raise', async () => {
+  const { code, output, result } = await gatsbyBuild({
+    routes: withSlowOffices({ offices, departments, jobs }, 2000),
+    plugins: [{ boardToken: 'acme', timeout: 100 }],
+    query: '{ site { id } }',
+    clean: true,
+  })
+
+  assert.notEqual(code, 0)
+  assert.equal(result, undefined, 'the build went on to create pages')
+  // Gatsby prints the message, and then the error again with its stack trace
+  const messages = output.split('\n')
+    .filter(line => line.includes('Failed to fetch') && !line.trimStart().startsWith('Error:'))
+  assert.deepEqual(messages, [
+    'error gatsby-source-greenhouse-job-board: Failed to fetch offices from Greenhouse API: ' +
+      'Request to https://boards-api.greenhouse.io/v1/boards/acme/offices/ timed out after 100ms. ' +
+      'Set the `timeout` plugin option to wait longer.',
+  ], output)
 })
