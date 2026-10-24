@@ -1,25 +1,32 @@
-const { describe, test } = require('node:test')
+const { beforeEach, describe, test } = require('node:test')
 const assert = require('node:assert/strict')
 const { stripVTControlCharacters } = require('node:util')
-const { testPluginOptionsSchema } = require('gatsby-plugin-utils')
+const { Joi, testPluginOptionsSchema, validateOptionsSchema } = require('gatsby-plugin-utils')
 
-const { pluginOptionsSchema, createSchemaCustomization, sourceNodes } = require('../gatsby-node')
+const { pluginOptionsSchema, createSchemaCustomization } = require('../gatsby-node')
 const { typeDefs } = require('../schema')
-const { loadWithMockClock, run } = require('./mock-clock')
+const { loadFresh, loadWithMockClock, run } = require('./mock-clock')
 
-const boardUrl = 'https://boards-api.greenhouse.io/v1/boards/acme'
+const boardUrl = boardToken => `https://boards-api.greenhouse.io/v1/boards/${boardToken}`
 
-// Serves a board from the Greenhouse API, and returns when each request was sent. Jobs listed in
-// `missingJobs` are in the job listing, but their details are gone.
-const mockBoard = (t, { offices = [], departments = [], jobs = [], missingJobs = [] }) => {
+// The responses of the Greenhouse API for a board. Jobs listed in `missingJobs` are in the job
+// listing, but their details are gone.
+const boardRoutes = (boardToken, { offices = [], departments = [], jobs = [], missingJobs = [] }) => {
+  const url = boardUrl(boardToken)
   const routes = {
-    [`${boardUrl}/offices/`]: { offices },
-    [`${boardUrl}/departments/`]: { departments },
-    [`${boardUrl}/jobs/`]: { jobs: jobs.map(({ id, title }) => ({ id, title })) },
+    [`${url}/offices/`]: { offices },
+    [`${url}/departments/`]: { departments },
+    [`${url}/jobs/`]: { jobs: jobs.map(({ id, title }) => ({ id, title })) },
   }
   for (const job of jobs) {
-    routes[`${boardUrl}/jobs/${job.id}?questions=true`] = missingJobs.includes(job.id) ? 404 : job
+    routes[`${url}/jobs/${job.id}?questions=true`] = missingJobs.includes(job.id) ? 404 : job
   }
+  return routes
+}
+
+// Serves boards from the Greenhouse API, keyed by board token, and returns when each request was sent
+const mockBoards = (t, boards) => {
+  const routes = Object.assign({}, ...Object.entries(boards).map(([boardToken, board]) => boardRoutes(boardToken, board)))
   const times = []
   t.mock.method(globalThis, 'fetch', async url => {
     times.push(Date.now())
@@ -29,8 +36,11 @@ const mockBoard = (t, { offices = [], departments = [], jobs = [], missingJobs =
   return times
 }
 
-// The parts of Gatsby that sourceNodes uses, with a node store that can be kept between builds
-const fakeGatsby = (store = new Map()) => {
+const mockBoard = (t, board) => mockBoards(t, { acme: board })
+
+// The parts of Gatsby that sourceNodes uses. A later build passes the fake of the build before it,
+// to keep its node store and cache.
+const fakeGatsby = ({ store = new Map(), cache = new Map() } = {}) => {
   const calls = []
   const logs = { info: [], warn: [], panic: [] }
   // like Gatsby, which adds the message of an error passed along to the message it logs
@@ -52,6 +62,7 @@ const fakeGatsby = (store = new Map()) => {
 
   return {
     store,
+    cache,
     calls,
     logs,
     args: {
@@ -62,10 +73,14 @@ const fakeGatsby = (store = new Map()) => {
         },
         deleteNode,
       },
+      // like Gatsby, which serializes what it caches
+      cache: {
+        get: async key => structuredClone(cache.get(key)),
+        set: async (key, value) => cache.set(key, structuredClone(value)),
+      },
       createNodeId: key => key,
       createContentDigest: content => JSON.stringify(content),
       getNode: id => store.get(id),
-      getNodesByType: type => [...store.values()].filter(node => node.internal.type === type),
       reporter: { info: log('info'), warn: log('warn'), panic: log('panic') },
     },
   }
@@ -93,6 +108,26 @@ describe('pluginOptionsSchema', () => {
     const { isValid, errors } = await testPluginOptionsSchema(pluginOptionsSchema, { boardToken: true })
     assert.equal(isValid, false)
     assert.deepEqual(errors, ['"boardToken" must be one of [string, number]'])
+  })
+
+  test('reject a board token that cannot name a board, which earlier versions failed to fetch', async () => {
+    const errors = {}
+    for (const boardToken of ['', '   ', 0, -5, 1.5, null]) {
+      errors[JSON.stringify(boardToken)] = (await testPluginOptionsSchema(pluginOptionsSchema, { boardToken })).errors
+    }
+    assert.deepEqual(errors, {
+      '""': ['"boardToken" is not allowed to be empty'],
+      '"   "': ['"boardToken" is not allowed to be empty'],
+      0: ['"boardToken" must be a positive number'],
+      [-5]: ['"boardToken" must be a positive number'],
+      1.5: ['"boardToken" must be an integer'],
+      null: ['"boardToken" must be one of [string, number]'],
+    })
+  })
+
+  test('trim spaces around the board token, which would otherwise end up in the URL', async () => {
+    const { value } = await validateOptionsSchema(pluginOptionsSchema({ Joi }), { boardToken: ' acme\n' })
+    assert.equal(value.boardToken, 'acme')
   })
 
   test('only warn about options it does not know, so existing configs keep working', async () => {
@@ -134,6 +169,11 @@ describe('createSchemaCustomization', () => {
 })
 
 describe('sourceNodes', () => {
+  let sourceNodes
+  beforeEach(() => {
+    ({ sourceNodes } = loadFresh('../gatsby-node'))
+  })
+
   test('create linked nodes, and log the counts without "No Office" and "No Department"', async t => {
     mockBoard(t, {
       offices: [{ id: 0, name: 'No Office', departments: [] }, { id: 10, departments: [{ id: 0, jobs: [{ id: 100 }] }] }],
@@ -184,7 +224,7 @@ describe('sourceNodes', () => {
         { id: 6, parent_id: null, child_ids: [7], jobs: [] },
       ],
     })
-    const rebuild = fakeGatsby(gatsby.store)
+    const rebuild = fakeGatsby(gatsby)
     await sourceNodes(rebuild.args, { boardToken: 'acme' })
 
     const firstCreate = rebuild.calls.findIndex(([action]) => action === 'createNode')
@@ -201,6 +241,54 @@ describe('sourceNodes', () => {
       [...rebuild.store.keys()].sort(),
       cachedIds.filter(id => id !== 'GreenhouseDepartment-4').sort()
     )
+  })
+
+  test('leave the nodes of other boards alone, for a site that sources several boards', async t => {
+    const globex = {
+      departments: [
+        { id: 6, parent_id: null, child_ids: [7], jobs: [] },
+        { id: 7, parent_id: 6, child_ids: [], jobs: [] },
+      ],
+    }
+    mockBoards(t, {
+      acme: {
+        departments: [
+          { id: 1, name: 'Engineering', parent_id: null, child_ids: [2], jobs: [] },
+          { id: 2, parent_id: 1, child_ids: [], jobs: [] },
+        ],
+      },
+      globex,
+    })
+    // like Gatsby, which runs each instance of the plugin in turn, with one node store and cache
+    const gatsby = fakeGatsby()
+    await sourceNodes(gatsby.args, { boardToken: 'acme' })
+    await sourceNodes(gatsby.args, { boardToken: 'globex' })
+
+    assert.equal(gatsby.calls.some(([action]) => action === 'deleteNode'), false)
+    const cachedIds = [...gatsby.store.keys()]
+    assert.deepEqual(cachedIds, [1, 2, 6, 7].map(id => `GreenhouseDepartment-${id}`))
+
+    // the next build: acme renames 1, while globex stays as it was
+    t.mock.restoreAll()
+    mockBoards(t, {
+      acme: {
+        departments: [
+          { id: 1, name: 'Engineering & Product', parent_id: null, child_ids: [2], jobs: [] },
+          { id: 2, parent_id: 1, child_ids: [], jobs: [] },
+        ],
+      },
+      globex,
+    })
+    const rebuild = fakeGatsby(gatsby)
+    await sourceNodes(rebuild.args, { boardToken: 'acme' })
+    await sourceNodes(rebuild.args, { boardToken: 'globex' })
+
+    assert.deepEqual(rebuild.calls.filter(([action]) => action === 'deleteNode'), [
+      ['deleteNode', 'GreenhouseDepartment-1'],
+      ['deleteNode', 'GreenhouseDepartment-2'],
+    ])
+    assert.deepEqual([...rebuild.store.keys()].sort(), cachedIds)
+    assert.equal(rebuild.store.get('GreenhouseDepartment-1').name, 'Engineering & Product')
   })
 
   test('warn about a job whose details are gone, and leave it out', async t => {
@@ -246,7 +334,7 @@ describe('sourceNodes', () => {
 
     assert.deepEqual(gatsby.logs.panic, [
       'gatsby-source-greenhouse-job-board: Failed to fetch offices from Greenhouse API: ' +
-        `Request to ${boardUrl}/offices/ failed with HTTP status 404`,
+        `Request to ${boardUrl('acme')}/offices/ failed with HTTP status 404`,
     ])
     assert.deepEqual(gatsby.calls, [])
   })

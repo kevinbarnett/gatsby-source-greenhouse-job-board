@@ -96,6 +96,7 @@ types and properties available.
 ### Query jobs
 
 Jobs are linked to their `departments` and `offices`, which are lists, following the format of the API.
+A job without a department or office has `null` for `departments` or `offices`.
 
 ```graphql
 {
@@ -138,7 +139,9 @@ Decode it and run it through an HTML sanitizer before rendering it with `dangero
 
 ### Query departments
 
-Department data links to `jobs` from which all data mentioned in the previous example can be queried. Departments can also have parent/child relationships which are linked when available.
+Department data links to `jobs` from which all data mentioned in the previous example can be queried.
+Departments can also have parent/child relationships which are linked when available.
+A department without jobs has `null` for `jobs`.
 
 ```graphql
 {
@@ -169,7 +172,9 @@ Department data links to `jobs` from which all data mentioned in the previous ex
 
 ### Query offices
 
-Office data links to both `departments` and `jobs` from which all data mentioned in the previous examples can be queried. Offices can also have parent/child relationships which are linked when available.
+Office data links to both `departments` and `jobs` from which all data mentioned in the previous examples can be queried.
+Offices can also have parent/child relationships which are linked when available.
+An office without departments has `null` for `departments`, and an office with departments has a list of `jobs`, which is empty when none of its departments has jobs.
 
 ```graphql
 {
@@ -214,6 +219,8 @@ Greenhouse blocks an IP address for about a minute once it gets a few thousand r
 To stay well below that, the plugin sends at most 2,000 requests a minute by default, counting every board in the build.
 A build that fetches more than about 2,000 jobs then takes about a minute longer for every further 2,000 jobs, instead of failing.
 The plugin retries timeouts, network errors, HTTP status 429 and server errors up to 3 times, but not 403, since a block lasts longer than the retries would wait.
+When Greenhouse lists a job but no longer has its details, usually because the job closed during the build, the plugin leaves the job out and warns about it.
+If that happens to more than half of the jobs, the build fails instead, since Greenhouse is then more likely failing than closing jobs.
 The plugin can only count the requests of its own build, so builds that run at the same time from one IP address, for example on shared CI runners, can still get blocked.
 If a build fails with HTTP status 403, wait a minute and build again.
 
@@ -287,6 +294,15 @@ Before upgrading, ensure you meet the new requirements:
 **Issue: Plugin not found or incompatible**
 - **Solution**: Verify you're using Gatsby 5+ and Node.js 18+.
 
+## Development
 
+Sites can use the plugin on Node.js 18 and later, but working on the plugin needs Node.js 22 or later, which `devEngines` in `package.json` enforces, since the tests rely on features of the Node.js test runner that older versions lack.
 
+```bash
+npm install
+npm test
+npm run test:e2e
+```
 
+`npm test` runs the unit tests in `src/__tests__`.
+`npm run test:e2e` packs the plugin the way npm publishes it, and builds the Gatsby site in `e2e/site` with it, against a mock of the Greenhouse API.

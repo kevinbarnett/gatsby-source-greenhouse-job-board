@@ -50,7 +50,7 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
     id,
     internal_job_id: id + 1000,
     title,
-    absolute_url: `https://job-boards.greenhouse.io/acme/jobs/${id}`,
+    absolute_url: `https://job-boards.greenhouse.io/${boardToken}/jobs/${id}`,
     updated_at: '2026-10-01T09:30:00-04:00',
     first_published: '2026-09-01T09:30:00-04:00',
     requisition_id: `R-${id}`,
@@ -106,10 +106,10 @@ const greenhouseRoutes = ({ offices, departments, jobs, missingJobs = [] }, boar
   return routes
 }
 
-// Runs `gatsby build` for the site, with `boardToken` and `options` as the plugin's options and
-// `routes` as the responses of the Greenhouse API, and returns Gatsby's exit code, what it printed,
-// and the result of running `query` while the site creates its pages, if the build got that far
-const gatsbyBuild = async ({ routes, boardToken = 'acme', options, query, clean }) => {
+// Runs `gatsby build` for the site, with the plugin added once for each of the options in `plugins`
+// and `routes` as the responses of the Greenhouse API, and returns Gatsby's exit code, what it
+// printed, and the result of running `query` while the site creates its pages, if the build got that far
+const gatsbyBuild = async ({ routes, plugins = [{ boardToken: 'acme' }], query, clean }) => {
   if (clean) {
     for (const dir of ['.cache', 'public']) {
       fs.rmSync(path.join(siteDir, dir), { recursive: true, force: true })
@@ -129,7 +129,7 @@ const gatsbyBuild = async ({ routes, boardToken = 'acme', options, query, clean 
       NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require ${JSON.stringify(path.join(__dirname, 'mock-greenhouse.js'))}`]
         .filter(Boolean)
         .join(' '),
-      E2E_PLUGIN_OPTIONS: JSON.stringify({ boardToken, ...options }),
+      E2E_PLUGIN_OPTIONS: JSON.stringify(plugins),
       GREENHOUSE_MOCK: mockFile,
       E2E_QUERY: query,
       E2E_RESULT: resultFile,
@@ -145,10 +145,14 @@ const gatsbyBuild = async ({ routes, boardToken = 'acme', options, query, clean 
 }
 
 // Builds the site, serving `board` as the Greenhouse API, and returns the result of running `query`
-// while the site creates its pages, along with what Gatsby printed
-const build = async ({ board, boardToken = 'acme', options, query, clean = true }) => {
+// while the site creates its pages, along with what Gatsby printed. A site that sources several
+// boards gives `boards` instead, as a list of `{ boardToken, board }`, and adds the plugin once for each.
+const build = async ({ board, boardToken = 'acme', boards = [{ boardToken, board }], options, query, clean = true }) => {
   const { code, output, result } = await gatsbyBuild({
-    routes: greenhouseRoutes(board, boardToken), boardToken, options, query, clean,
+    routes: Object.assign({}, ...boards.map(({ boardToken, board }) => greenhouseRoutes(board, boardToken))),
+    plugins: boards.map(({ boardToken }) => ({ boardToken, ...options })),
+    query,
+    clean,
   })
   assert.equal(code, 0, `gatsby build failed:\n${output}`)
   const { data, errors } = result
@@ -188,8 +192,8 @@ const linksQuery = `{
   }
 }`
 
-// Greenhouse ids of linked nodes, in order. A node without links of a kind has null instead of a list.
-const ids = nodes => (nodes || []).map(node => node.gh_Id).sort((a, b) => a - b)
+// Greenhouse ids of linked nodes, in order, or null for a node that links to none of a kind
+const ids = nodes => nodes && nodes.map(node => node.gh_Id).sort((a, b) => a - b)
 
 // What the site sees of each office, department and job, keyed by Greenhouse id
 const linksOf = data => {
@@ -267,17 +271,17 @@ test('a site can query offices, departments and jobs, and how they link up', asy
       11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
     },
     departments: {
-      1: { name: 'Engineering', parent: null, children: [2, 3], jobs: [] },
+      1: { name: 'Engineering', parent: null, children: [2, 3], jobs: null },
       2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
       3: { name: 'Backend', parent: 1, children: [], jobs: [101] },
-      4: { name: 'Sales', parent: null, children: [5], jobs: [] },
+      4: { name: 'Sales', parent: null, children: [5], jobs: null },
       5: { name: 'Account Management', parent: 4, children: [], jobs: [102] },
     },
     jobs: {
       100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
       101: { title: 'Backend Engineer', departments: [3], offices: [10] },
       102: { title: 'Account Manager', departments: [5], offices: [10] },
-      103: { title: 'Office Manager', departments: [], offices: [11] },
+      103: { title: 'Office Manager', departments: null, offices: [11] },
     },
   })
 
@@ -322,17 +326,95 @@ test('a rebuild from the cache keeps offices and departments that changed, moved
       11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
     },
     departments: {
-      1: { name: 'Product Engineering', parent: null, children: [2, 3, 5], jobs: [] },
+      1: { name: 'Product Engineering', parent: null, children: [2, 3, 5], jobs: null },
       2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
-      3: { name: 'Backend', parent: 1, children: [], jobs: [] },
+      3: { name: 'Backend', parent: 1, children: [], jobs: null },
       5: { name: 'Account Management', parent: 1, children: [], jobs: [102] },
     },
     jobs: {
       100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
       102: { title: 'Account Manager', departments: [5], offices: [10] },
-      103: { title: 'Office Manager', departments: [], offices: [11] },
+      103: { title: 'Office Manager', departments: null, offices: [11] },
     },
   })
+})
+
+test('a site can source several boards, and a rebuild that changes one board keeps the others', async () => {
+  const otherBoard = {
+    offices: [
+      { id: 20, name: 'Americas', location: null, parent: null, children: [21] },
+      { id: 21, name: 'Toronto', location: 'Toronto, Canada', parent: 20, children: [] },
+    ],
+    departments: [
+      { id: 6, name: 'Design', parent: null, children: [7] },
+      { id: 7, name: 'Product Design', parent: 6, children: [] },
+    ],
+    jobs: [{ id: 200, title: 'Product Designer', department: 7, office: 21 }],
+  }
+  const otherLinks = {
+    offices: {
+      // an office with departments has a list of jobs, even an empty one, as 2.0 did
+      20: { name: 'Americas', parent: null, children: [21], jobs: [] },
+      21: { name: 'Toronto', parent: 20, children: [], jobs: [200] },
+    },
+    departments: {
+      6: { name: 'Design', parent: null, children: [7], jobs: null },
+      7: { name: 'Product Design', parent: 6, children: [], jobs: [200] },
+    },
+    jobs: {
+      200: { title: 'Product Designer', departments: [7], offices: [21] },
+    },
+  }
+  const boards = acmeBoard => [{ boardToken: 'acme', board: acmeBoard }, { boardToken: 'globex', board: otherBoard }]
+
+  const { data } = await build({ boards: boards({ offices, departments, jobs }), query: linksQuery })
+
+  assert.deepEqual(linksOf(data), {
+    offices: {
+      10: { name: 'Europe', parent: null, children: [11], jobs: [101, 102] },
+      11: { name: 'Berlin', parent: 10, children: [], jobs: [100, 103] },
+      ...otherLinks.offices,
+    },
+    departments: {
+      1: { name: 'Engineering', parent: null, children: [2, 3], jobs: null },
+      2: { name: 'Frontend', parent: 1, children: [], jobs: [100] },
+      3: { name: 'Backend', parent: 1, children: [], jobs: [101] },
+      4: { name: 'Sales', parent: null, children: [5], jobs: null },
+      5: { name: 'Account Management', parent: 4, children: [], jobs: [102] },
+      ...otherLinks.departments,
+    },
+    jobs: {
+      100: { title: 'Frontend Engineer', departments: [2], offices: [11] },
+      101: { title: 'Backend Engineer', departments: [3], offices: [10] },
+      102: { title: 'Account Manager', departments: [5], offices: [10] },
+      103: { title: 'Office Manager', departments: null, offices: [11] },
+      ...otherLinks.jobs,
+    },
+  })
+
+  const rebuilt = await build({
+    boards: boards({
+      offices: [offices[0], { ...offices[1], name: 'EMEA' }],
+      departments: [departments[0], { ...departments[1], name: 'Product Engineering' }, ...departments.slice(2)],
+      jobs,
+    }),
+    query: linksQuery,
+    clean: false,
+  })
+
+  assert.doesNotMatch(rebuilt.output, /deleting your site's\s+cache/, 'Gatsby did not use the cache')
+  const links = linksOf(rebuilt.data)
+  assert.deepEqual(
+    { 10: links.offices[10].name, 1: links.departments[1].name },
+    { 10: 'EMEA', 1: 'Product Engineering' }
+  )
+  // the other board did not change, so it is still all there
+  assert.deepEqual({
+    offices: { 20: links.offices[20], 21: links.offices[21] },
+    departments: { 6: links.departments[6], 7: links.departments[7] },
+    jobs: { 200: links.jobs[200] },
+  }, otherLinks)
+  assert.deepEqual(Object.keys(links.departments).map(Number), [1, 2, 3, 4, 5, 6, 7])
 })
 
 test('a site can query a board that has no offices, departments or jobs', async () => {
@@ -396,6 +478,23 @@ test('a build with an unknown board token fails, and says once which request fai
   ], output)
 })
 
+test('a build with a blank board token, or one of 0, fails before sending any request, and says why', async () => {
+  const { code, output, result } = await gatsbyBuild({
+    // no responses, so any request would fail with a different error
+    routes: {},
+    plugins: [{ boardToken: '  ' }, { boardToken: 0 }],
+    query: '{ site { id } }',
+    clean: true,
+  })
+
+  assert.notEqual(code, 0)
+  assert.equal(result, undefined, 'the build went on to create pages')
+  assert.match(output, /Invalid plugin options for "gatsby-source-greenhouse-job-board"/)
+  assert.match(output, /"boardToken" is not allowed to be empty/)
+  assert.match(output, /"boardToken" must be a positive number/)
+  assert.doesNotMatch(output, /Failed to fetch/)
+})
+
 test('a site can set how many requests to send in any minute', async () => {
   const { data, output } = await build({
     board: { offices, departments, jobs },
@@ -411,7 +510,7 @@ test('a build with requests per minute below 1 fails before sending any request,
   const { code, output, result } = await gatsbyBuild({
     // no responses, so any request would fail with a different error
     routes: {},
-    options: { requestsPerMinute: 0 },
+    plugins: [{ boardToken: 'acme', requestsPerMinute: 0 }],
     query: '{ site { id } }',
     clean: true,
   })

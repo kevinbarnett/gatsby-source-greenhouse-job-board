@@ -1,8 +1,12 @@
 const { describe, test, beforeEach } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { fetchJobs, fetchOffices, fetchDepartments } = require('../fetch')
-const { loadWithMockClock, run } = require('./mock-clock')
+const { loadFresh, loadWithMockClock, run } = require('./mock-clock')
+
+let fetchJobs, fetchOffices, fetchDepartments
+beforeEach(() => {
+  ({ fetchJobs, fetchOffices, fetchDepartments } = loadFresh('../fetch'))
+})
 
 const baseUrl = 'https://boards-api.greenhouse.io/v1/boards'
 
@@ -49,6 +53,41 @@ describe('fetchOffices and fetchDepartments', () => {
   })
 })
 
+describe('options', () => {
+  test('reject an option that is not a whole number within range, before sending any request', async t => {
+    const requests = mockFetch(t, {})
+    const errors = []
+    for (const [name, value] of [
+      ['concurrency', 0],
+      ['concurrency', null],
+      ['requestsPerMinute', 0],
+      ['requestsPerMinute', NaN],
+      ['requestsPerMinute', Infinity],
+      ['timeout', 0],
+      ['retries', -1],
+      ['retryDelay', 1.5],
+      ['maxRetryDelay', '50'],
+    ]) {
+      for (const fetchList of [fetchJobs, fetchOffices, fetchDepartments]) {
+        await fetchList('acme', { [name]: value }).catch(error => errors.push(`${error.name}: ${error.message}`))
+      }
+    }
+    assert.deepEqual(requests, [])
+    assert.deepEqual(new Set(errors), new Set([
+      'RangeError: The concurrency option must be a whole number of at least 1, not 0',
+      'RangeError: The concurrency option must be a whole number of at least 1, not null',
+      'RangeError: The requestsPerMinute option must be a whole number of at least 1, not 0',
+      'RangeError: The requestsPerMinute option must be a whole number of at least 1, not NaN',
+      'RangeError: The requestsPerMinute option must be a whole number of at least 1, not Infinity',
+      'RangeError: The timeout option must be a whole number of at least 1, not 0',
+      'RangeError: The retries option must be a whole number of at least 0, not -1',
+      'RangeError: The retryDelay option must be a whole number of at least 0, not 1.5',
+      "RangeError: The maxRetryDelay option must be a whole number of at least 0, not '50'",
+    ]))
+    assert.equal(errors.length, 27)
+  })
+})
+
 describe('retries', () => {
   test('retry server errors and rate limiting until a request succeeds', async t => {
     const requests = mockFetch(t, {
@@ -79,6 +118,28 @@ describe('retries', () => {
       message: `Failed to fetch offices from Greenhouse API: Request to ${baseUrl}/acme/offices/ failed with HTTP status 500`,
     })
     assert.equal(requests.length, 3)
+  })
+
+  test('retry when the connection fails while the body arrives', async t => {
+    const requests = mockFetch(t, {
+      [`${baseUrl}/acme/offices/`]: [
+        () => new Response(new ReadableStream({ start: controller => controller.error(new TypeError('terminated')) })),
+        json({ offices: [{ id: 1 }] }),
+      ],
+    })
+    assert.deepEqual(await fetchOffices('acme', fast), [{ id: 1 }])
+    assert.equal(requests.length, 2)
+  })
+
+  test('fail at once when a response is not JSON, since asking again gets the same answer', async t => {
+    const requests = mockFetch(t, {
+      [`${baseUrl}/acme/offices/`]: [new Response('<!DOCTYPE html><title>Access denied</title>')],
+    })
+    await assert.rejects(fetchOffices('acme', fast), {
+      message: `Failed to fetch offices from Greenhouse API: Request to ${baseUrl}/acme/offices/ returned a body ` +
+        `that is not JSON: Unexpected token '<', "<!DOCTYPE "... is not valid JSON`,
+    })
+    assert.equal(requests.length, 1)
   })
 
   test('do not retry client errors', async t => {
@@ -166,6 +227,32 @@ describe('fetchJobs', () => {
     const jobs = await fetchJobs('acme', { ...fast, onMissingJob: job => missing.push(job) })
     assert.deepEqual(jobs.map(job => job.id), [1, 3])
     assert.deepEqual(missing, [{ id: 2 }])
+  })
+
+  test('skip up to half of the jobs when their details are gone, and report them in the order of the listing', async t => {
+    routes[jobsUrl] = [json({ jobs: [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] })]
+    routes[`${jobsUrl}4?questions=true`] = [json({}, { status: 404 })]
+    // job 1 is found to be missing after job 4
+    routes[`${jobsUrl}1?questions=true`] = [async () => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return json({}, { status: 404 })
+    }]
+    mockFetch(t, routes)
+    const missing = []
+    const jobs = await fetchJobs('acme', { ...fast, onMissingJob: job => missing.push(job.id) })
+    assert.deepEqual(jobs.map(job => job.id), [2, 3])
+    assert.deepEqual(missing, [1, 4])
+  })
+
+  test('fail when the details of more than half of the jobs are gone, since Greenhouse is likely failing', async t => {
+    routes[`${jobsUrl}1?questions=true`] = [json({}, { status: 404 })]
+    routes[`${jobsUrl}3?questions=true`] = [json({}, { status: 404 })]
+    mockFetch(t, routes)
+    const missing = []
+    await assert.rejects(fetchJobs('acme', { ...fast, onMissingJob: job => missing.push(job.id) }), {
+      message: 'Failed to fetch jobs from Greenhouse API: Greenhouse has no details for 2 of the 3 jobs it listed',
+    })
+    assert.deepEqual(missing, [])
   })
 
   test('fail with the job id when its details cannot be fetched', async t => {
@@ -266,6 +353,20 @@ describe('requests per minute', () => {
     const options = { ...fast, requestsPerMinute: 1 }
     await run(t, Promise.all([fetchOffices('acme', options), fetchDepartments('other', options)]))
     assert.deepEqual(times, [0, 60000])
+  })
+
+  test('send waiting requests in the order they asked, waking up only when one can go', async t => {
+    const { fetchJobs } = loadWithMockClock(t, '../fetch')
+    const times = mockFetchTimes(t, board(9))
+    await run(t, fetchJobs('acme', { ...fast, requestsPerMinute: 2 }))
+    assert.deepEqual(
+      globalThis.fetch.mock.calls.map(call => call.arguments[0]),
+      [jobsUrl, ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(id => `${jobsUrl}${id}?questions=true`)]
+    )
+    assert.deepEqual(times, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4].map(minutes => minutes * 60000))
+    // the clock is read when a request asks to go while none is waiting, and when the oldest
+    // request stops counting, rather than each time any waiting request wakes up
+    assert.ok(performance.now.mock.callCount() <= times.length, `read the clock ${performance.now.mock.callCount()} times`)
   })
 
   test('count retries too', async t => {

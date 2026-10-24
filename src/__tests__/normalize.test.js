@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const {
   filterResponseForIds,
   buildNodesFromResponse,
+  createLinker,
   linkParentChildReferences,
   linkForeignReferences,
   addContentDigests,
@@ -14,8 +15,9 @@ const createContentDigest = content => JSON.stringify(content)
 
 const buildNodes = response => {
   let nodes = buildNodesFromResponse(response, createNodeId)
-  nodes = linkParentChildReferences(nodes, createNodeId)
-  nodes = linkForeignReferences(nodes, createNodeId)
+  const linkTo = createLinker(nodes, createNodeId)
+  nodes = linkParentChildReferences(nodes, linkTo)
+  nodes = linkForeignReferences(nodes, linkTo)
   return addContentDigests(nodes, createContentDigest)
 }
 
@@ -86,16 +88,20 @@ describe('linkForeignReferences', () => {
         ],
       },
       { id: 11, departments: [] },
+      { id: 12, departments: [{ id: 2, jobs: [] }, { id: 0, name: 'No Department', jobs: [] }] },
+      { id: 13, departments: [{ id: 0, name: 'No Department', jobs: [{ id: 102 }] }] },
     ]),
     departments: filterResponseForIds([
       { id: 1, jobs: [{ id: 100 }, { id: 101 }, { id: 404 }] },
       { id: 2, jobs: [] },
+      { id: 3, jobs: [{ id: 404 }] },
       { id: 0, name: 'No Department', jobs: [{ id: 102 }] },
     ]),
     jobs: [
       { id: 100, departments: [{ id: 1 }], offices: [{ id: 10 }, { id: 404 }] },
       { id: 101, departments: [{ id: 1 }, { id: 2 }], offices: [{ id: 10 }] },
-      { id: 102, departments: [], offices: [{ id: 10 }] },
+      { id: 102, departments: [], offices: [{ id: 10 }, { id: 13 }] },
+      { id: 103, departments: [{ id: 404 }], offices: [{ id: 404 }] },
     ],
   })
 
@@ -117,8 +123,28 @@ describe('linkForeignReferences', () => {
       assert.equal('jobs' in node || 'departments' in node || 'offices' in node, false, node.id)
     }
     assert.equal('departments___NODE' in byId(nodes, 'GreenhouseOffice-11'), false)
+    assert.equal('jobs___NODE' in byId(nodes, 'GreenhouseOffice-11'), false)
     assert.equal('jobs___NODE' in byId(nodes, 'GreenhouseDepartment-2'), false)
     assert.equal('departments___NODE' in byId(nodes, 'GreenhouseJob-102'), false)
+  })
+
+  test('leave out links that only list nodes that do not exist, the same as links to empty lists', () => {
+    const nodes = buildNodes(response())
+    assert.equal('jobs___NODE' in byId(nodes, 'GreenhouseDepartment-3'), false)
+    assert.equal('departments___NODE' in byId(nodes, 'GreenhouseJob-103'), false)
+    assert.equal('offices___NODE' in byId(nodes, 'GreenhouseJob-103'), false)
+  })
+
+  test('link an office with departments to a list of jobs, even an empty one, as 2.0 did', () => {
+    const office = byId(buildNodes(response()), 'GreenhouseOffice-12')
+    assert.deepEqual(office.departments___NODE, [createNodeId('GreenhouseDepartment-2')])
+    assert.deepEqual(office.jobs___NODE, [])
+  })
+
+  test('link an office to the jobs in its "No Department", even when it has no other department', () => {
+    const office = byId(buildNodes(response()), 'GreenhouseOffice-13')
+    assert.equal('departments___NODE' in office, false)
+    assert.deepEqual(office.jobs___NODE, [createNodeId('GreenhouseJob-102')])
   })
 
   test('leave the API response as it is', () => {
